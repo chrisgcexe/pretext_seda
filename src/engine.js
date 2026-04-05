@@ -427,6 +427,12 @@ export class LandTransition {
         this.isVisible = false;
         this.ctx = this.canvas.getContext('2d');
         this.hasScrolledOnGround = false; // Estado para activación de polvo
+        this.tornCharacters = new Map();
+        
+        // --- OPTIMIZACIÓN: ALFABETO PARA RUIDO ASCII ---
+        const combined = (toText + (fromElement ? fromElement.innerText : '')).replace(/\s/g, '');
+        this.alphabet = Array.from(new Set(combined.split('')));
+        if (this.alphabet.length === 0) this.alphabet = ['#', '.', '/', '\\', '+'];
 
         this.initLayout();
     }
@@ -443,7 +449,11 @@ export class LandTransition {
         while (true) {
             const line = window.Pretext.layoutNextLine(prepFrom, cur, MAX_WIDTH);
             if (!line) break;
-            this.linesFrom.push({ text: line.text, width: line.width });
+            const lineContent = line.text;
+            this.linesFrom.push({ 
+                text: lineContent, 
+                width: line.width
+            });
             cur = line.end;
         }
 
@@ -507,10 +517,12 @@ export class LandTransition {
         const jitterX = (Math.random() - 0.5) * rattleBase + Math.sin(rattleFreq * 0.5) * (rattleBase * 0.3);
         const jitterY = (Math.random() - 0.5) * rattleBase + Math.cos(rattleFreq * 0.5) * (rattleBase * 0.3);
 
-        let dollyFrom = progress * 2200;
+        const dollyFrom = progress * 2200;
         const h_unit = this.linesFrom.length * 32;
         const w_max = this.linesFrom.length > 0 ? Math.max(...this.linesFrom.map(l => l.width)) : 0;
-        const numRepeats = 5;
+        
+        // Optimización: Solo dibujamos las repeticiones necesarias para llenar la vista
+        const numRepeats = 8;
         const h_total = h_unit * numRepeats;
         const zArrival = 5800;
         const dollyTo = progress * (zArrival - 500);
@@ -518,6 +530,8 @@ export class LandTransition {
         const fromStyle = this.fromElement ? window.getComputedStyle(this.fromElement) : null;
         const fromWeight = fromStyle ? fromStyle.fontWeight : '400';
         const fromSize = fromStyle ? parseFloat(fromStyle.fontSize) : 16;
+        this.lastFromWeight = fromWeight;
+        this.lastFromSize = fromSize;
 
         if (this.fromElement) {
             const fromRect = this.fromElement.getBoundingClientRect();
@@ -544,7 +558,12 @@ export class LandTransition {
             rotationX = 85 * (Math.PI / 180);
             groundY = 220;
         }
-        
+
+        const fR = Math.floor(13 + (139 - 13) * tiltProgress);
+        const fG = Math.floor(9 + (69 - 9) * tiltProgress);
+        const fB = Math.floor(0 + (19 - 0) * tiltProgress);
+        this.lastFromColor = `rgb(${fR}, ${fG}, ${fB})`;
+
         ctx.textBaseline = 'middle';
         const toStyle = this.toElement ? window.getComputedStyle(this.toElement) : null;
         const targetColor = toStyle ? toStyle.color : 'rgb(13, 9, 0)';
@@ -592,6 +611,13 @@ export class LandTransition {
         ctx.textAlign = 'center';
         for (let j = numRepeats - 1; j >= 0; j--) {
             const y_offset = -j * h_unit;
+            
+            // --- OPTIMIZACIÓN: CULLING POR SEGMENTO (Repeat) ---
+            // Si todo el segmento j está lejos o ya pasó la cámara, lo saltamos.
+            const j_z_start = -(-j * h_unit) * Math.sin(rotationX) + 1000 - dollyFrom;
+            const j_z_end = -(h_unit - j * h_unit) * Math.sin(rotationX) + 1000 - dollyFrom;
+            if (Math.min(j_z_start, j_z_end) > 4800 || Math.max(j_z_start, j_z_end) < -500) continue;
+
             this.linesFrom.forEach((line, i) => {
                 const y_rel = (i - this.linesFrom.length / 2) * 32 + y_offset;
                 const y1 = groundY + y_rel * Math.cos(rotationX);
@@ -624,7 +650,10 @@ export class LandTransition {
                     const pScale = 700 / pzFinal;
                     return { x: centerX + p.x * pScale + jitterX, y: centerY + py1 * pScale + jitterY };
                 }).filter(p => p !== null);
-                if (lineProj.length === 4) {
+                
+                // --- OPTIMIZACIÓN: CULLING DE FONDO (LOD) ---
+                // No dibujamos el fondo de papel para líneas muy lejanas (>3000)
+                if (lineProj.length === 4 && zFinal < 3000) {
                     ctx.beginPath();
                     ctx.moveTo(lineProj[0].x, lineProj[0].y);
                     ctx.lineTo(lineProj[1].x, lineProj[1].y);
@@ -641,9 +670,55 @@ export class LandTransition {
                 const fromB = Math.floor(0 + (19 - 0) * tiltProgress);
                 ctx.font = `${fromWeight} ${fs}px "Courier New", monospace`;
                 ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle'; // Alineación innegociable
-                ctx.fillStyle = `rgb(${fromR}, ${fromG}, ${fromB})`;
-                ctx.fillText(line.text, x_proj, y_proj);
+                ctx.textBaseline = 'middle'; 
+                ctx.fillStyle = this.lastFromColor;
+                
+                // --- OPTIMIZACIÓN: LOD DE HUECOS (DESGARRO) ---
+                // Si el texto es muy pequeño (<10px), ignoramos los huecos para ganar CPU
+                if (fs < 10) {
+                    ctx.fillText(line.text, x_proj, y_proj);
+                    return;
+                }
+
+                // ── RENDERIZADO CON HUECOS (Efecto Desgarro) ──
+                let hasHoleOnLine = false;
+                for (let k = 0; k < line.text.length; k++) {
+                    if (this.tornCharacters.has(`from_${i}_${k}_${j}`)) {
+                        hasHoleOnLine = true;
+                        break;
+                    }
+                }
+
+                if (!hasHoleOnLine) {
+                    // --- OPTIMIZACIÓN: DECIMACIÓN REAL (Stretched Noise) ---
+                    if (zFinal > 1200) {
+                        const density = zFinal > 2800 ? 0.12 : 0.4;
+                        const targetLen = Math.max(8, Math.floor(line.text.length * density));
+                        let sparseStr = "";
+                        const alphabet = this.alphabet;
+                        
+                        // Generar una cadena mucho más corta
+                        for (let k = 0; k < targetLen; k++) {
+                             const seed = (i * 7 + k * 13 + j * 17) % alphabet.length;
+                             sparseStr += alphabet[seed];
+                        }
+                        
+                        // Estirar la cadena corta para que ocupe todo el ancho del párrafo
+                        // Esto mantiene la forma física pero procesa un 90% menos de letras
+                        ctx.fillText(sparseStr, x_proj, y_proj, line.width * fovScale);
+                    } else {
+                        ctx.fillText(line.text, x_proj, y_proj);
+                    }
+                } else {
+                    // Modo desgarro: letra por letra
+                    const charW = (line.width * fovScale) / line.text.length;
+                    const startX = x_proj - (line.width * fovScale) / 2 + charW / 2;
+                    for (let k = 0; k < line.text.length; k++) {
+                        if (!this.tornCharacters.has(`from_${i}_${k}_${j}`)) {
+                            ctx.fillText(line.text[k], startX + k * charW, y_proj);
+                        }
+                    }
+                }
             });
         }
         if (didSaveFrom) ctx.restore();
@@ -822,71 +897,110 @@ export class LandTransition {
         const numRepeats = 8;
 
         if (isStableOnGround) {
-            // 1. Emisión ambiental "Fricción y Viento" (ROAD_DUST)
-            if (Math.random() > 0.1) { // Mayor densidad de partículas
+            // 1. Emisión ambiental "Fricción y Viento" (ROAD_DUST) - EFECTO DESGARRO
+            if (Math.random() > 0.1) { 
                 const useTo = (this.progress > 0.45 && this.linesTo.length > 0 && Math.random() > 0.5);
                 const pool = useTo ? this.linesTo : this.linesFrom;
                 if (pool.length > 0) {
                     const i = Math.floor(Math.random() * pool.length);
                     const j = Math.floor(Math.random() * numRepeats);
                     const lineText = pool[i].text || " ";
-                    const yPaper = (i - pool.length / 2) * 32 - j * h_unit;
                     
-                    const rotS = useTo ? (85 * (1 - this.progress)) * (Math.PI / 180) : rotationX;
-                    const pZ = -yPaper * Math.sin(rotS);
-                    const zFinal = pZ + 1000 - dollyFrom;
+                    // Solo arrancamos si no es un espacio y no está ya arrancado
+                    const charIdx = Math.floor(Math.random() * lineText.length);
+                    const holeKey = `${useTo ? 'to' : 'from'}_${i}_${charIdx}_${j}`;
+                    
+                    if (lineText[charIdx] !== ' ' && !this.tornCharacters.has(holeKey)) {
+                        const yPaper = (i - pool.length / 2) * 32 - j * h_unit;
+                        const rotS = useTo ? (85 * (1 - this.progress)) * (Math.PI / 180) : rotationX;
+                        const pZ = -yPaper * Math.sin(rotS);
+                        const zFinal = pZ + 1000 - dollyFrom;
 
-                    if (zFinal > 120 && zFinal < 4600) { // Mayor span (cobertura)
-                        const charIdx = Math.floor(Math.random() * lineText.length);
-                        const charWidth = (pool[i].width || w_max) / lineText.length;
-                        const exactX = (charIdx - lineText.length / 2) * charWidth;
-                        
-                        this.dust.push({
-                            type: 'ROAD_DUST',
-                            x: exactX,
-                            y: 0, 
-                            z: pZ,
-                            vx: 0.4 + Math.random() * 1.2, // Muy lento inicial (fricción)
-                            ax: 0.15 + Math.random() * 0.25, // Aceleración inicial suave
-                            vy: 0,
-                            vz: 0,
-                            char: lineText[charIdx] || '.',
-                            life: 1.2, // Más vida para ver el arrastre
-                            rot: Math.random() * 6.28, 
-                            vRot: (Math.random() > 0.5 ? 1 : -1) * (0.1 + Math.random() * 0.2), // Mucha rotación (rodar)
-                            flutter: Math.random() * 6.28,
-                            scaleMult: 1.0
-                        });
+                        if (zFinal > 120 && zFinal < 4600) {
+                            const charWidth = (pool[i].width || w_max) / lineText.length;
+                            const exactX = (charIdx - lineText.length / 2) * charWidth;
+                            
+                            // Registrar Hueco (Regeneración en ~3 segundos)
+                            this.tornCharacters.set(holeKey, 1.0);
+
+                            this.dust.push({
+                                type: 'ROAD_DUST',
+                                x: exactX,
+                                y: 0, 
+                                z: pZ,
+                                vx: 0.4 + Math.random() * 1.2,
+                                ax: 0.15 + Math.random() * 0.25,
+                                vy: -1.5 - Math.random() * 2, // Pequeño salto inicial (Pop)
+                                vz: 0,
+                                char: lineText[charIdx],
+                                life: 1.2,
+                                rot: Math.random() * 6.28, 
+                                vRot: (Math.random() > 0.5 ? 1 : -1) * (0.1 + Math.random() * 0.2),
+                                flutter: Math.random() * 6.28,
+                                scaleMult: 1.0, // Empieza 1:1 para que coincida con el hueco
+                                stretchMax: 1.25, // Estiramiento progresivo
+                                stretchDecay: 0.1
+                            });
+                        }
                     }
                 }
             }
+            // ... (Resto de WAK_CLOUD igual)
 
-            // 2. Nube de Estela (WAK_CLOUD) - Impulsiva (Ataque)
+            // 2. Nube de Estela (WAK_CLOUD) - EFECTO DESGARRO POR MOVIMIENTO
             const isMoving = delta > 0.0001;
             if (this.hasScrolledOnGround && isMoving && this.progress < 0.98 && Math.random() > 0.3) {
-                const num = Math.min(4, Math.ceil(delta * 1200)); 
-                const baseZ = (dollyFrom - 450) + (Math.random() - 0.5) * 200; 
+                const pool = this.linesFrom; // La estela nace del origen
+                const num = Math.min(3, Math.ceil(delta * 1000)); 
+                const rotX = (85 * Math.PI / 180); 
 
-                for (let i = 0; i < num; i++) {
-                    if (Math.random() > 0.4) continue; 
-                    const char = source[Math.floor(Math.random() * source.length)] || ' ';
-                    if (char === ' ') continue;
-                    this.dust.push({
-                        type: 'WAK_CLOUD',
-                        x: (Math.random() - 0.5) * (w_max + 150),
-                        y: 0,
-                        z: baseZ + (Math.random() - 0.5) * 300,
-                        vx: (Math.random() - 0.5) * 4, 
-                        vy: -2 - Math.random() * 5, // Salto impulsivo (Ataque)
-                        vz: (Math.random() - 0.5) * 2,
-                        char: char,
-                        life: 0.7 + Math.random() * 0.3, 
-                        rot: Math.random() * 6.28,
-                        vRot: (Math.random() - 0.5) * 0.2,
-                        growth: 1.04 + Math.random() * 0.03, // Expansión rápida
-                        flutter: Math.random() * 6.28,
-                        scaleMult: 0.8 + Math.random() * 0.4
-                    });
+                for (let k = 0; k < num; k++) {
+                    if (Math.random() > 0.6) continue; 
+                    
+                    // Posición base de la estela (justo detrás de la cámara)
+                    const pZ = (dollyFrom - 450) + (Math.random() - 1.0) * 150;
+                    const pX = (Math.random() - 0.5) * (w_max * 0.8);
+
+                    // --- INVERSO: Mapear Z a Fila y Repetición ---
+                    const L = pool.length;
+                    const y_rel = -pZ / Math.sin(rotX);
+                    const K = Math.round(y_rel / 32 + L / 2);
+                    const i = ((K % L) + L) % L;
+                    const j = Math.floor((i - K) / L);
+                    
+                    const line = pool[i];
+                    if (!line) continue;
+                    
+                    const lineText = line.text;
+                    const charW = (line.width || w_max) / lineText.length;
+                    const charIdx = Math.round(pX / charW + lineText.length / 2);
+
+                    if (charIdx >= 0 && charIdx < lineText.length && lineText[charIdx] !== ' ') {
+                        const holeKey = `from_${i}_${charIdx}_${j}`;
+                        if (!this.tornCharacters.has(holeKey)) {
+                            // Arrancar la letra
+                            this.tornCharacters.set(holeKey, 1.0);
+
+                            this.dust.push({
+                                type: 'WAK_CLOUD',
+                                x: (charIdx - lineText.length / 2) * charW,
+                                y: 0,
+                                z: pZ,
+                                vx: (Math.random() - 0.5) * 6,
+                                vy: -4 - Math.random() * 8, // Salto impulsivo
+                                vz: (Math.random() - 0.5) * 5,
+                                char: lineText[charIdx],
+                                life: 1.0,
+                                rot: Math.random() * 6.28,
+                                vRot: (Math.random() - 0.5) * 0.4,
+                                growth: 1.04 + Math.random() * 0.03,
+                                flutter: Math.random() * 6.28,
+                                scaleMult: 1.0, 
+                                stretchMax: 1.4,
+                                stretchDecay: 0.15
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -922,6 +1036,14 @@ export class LandTransition {
             // Desvanecimiento orgánico
             p.life -= (p.type === 'WAK_CLOUD' ? 0.035 : 0.015);
 
+            // Física de Desgarro Orgánico (Estiramiento progresivo)
+            if (p.stretchMax && p.scaleMult < p.stretchMax) {
+                p.scaleMult += p.stretchDecay || 0.05;
+                if (p.scaleMult > p.stretchMax) p.stretchMax = 0; // Para de crecer
+            } else if (p.scaleMult > 1.0) {
+                p.scaleMult -= 0.02; // Vuelve a la normalidad
+            }
+
             if (p.type === 'WAK_CLOUD') p.scaleMult *= p.growth;
 
             const zF = (p.z || 0) + 1000 - dollyFrom;
@@ -929,6 +1051,19 @@ export class LandTransition {
         }
 
         if (this.dust.length > 300) this.dust.splice(0, 50);
+
+        // 4. Regeneración del Texto (Huecos)
+        for (const [key, life] of this.tornCharacters.entries()) {
+            const nextLife = life - 0.005; // Regenera en ~3-4 segundos
+            if (nextLife <= 0) {
+                this.tornCharacters.delete(key);
+            } else {
+                this.tornCharacters.set(key, nextLife);
+            }
+        }
+
+        // --- DISPARADORES NARRATIVOS (Eventos Persistentes) ---
+        // (Eliminado: ahora se maneja en script.js de forma universal)
     }
 
     renderDust(ctx, centerX, centerY, groundY, dollyFrom, jX, jY) {
@@ -956,15 +1091,11 @@ export class LandTransition {
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle'; 
 
-            if (p.type === 'ROAD_DUST') {
-                // SINCRO DE TAMAÑO CON EL PISO (16px base)
-                ctx.font = `bold ${Math.floor(16 * scale)}px "Courier New", monospace`;
-                ctx.fillStyle = '#8B4513'; 
+            if (p.type === 'ROAD_DUST' || p.type === 'WAK_CLOUD') {
+                const fs_sync = Math.floor((this.lastFromSize || 16) * scale);
+                ctx.font = `${this.lastFromWeight || 'bold'} ${fs_sync}px "Courier New", monospace`;
+                ctx.fillStyle = this.lastFromColor || '#8B4513'; 
                 ctx.fillText(p.char, 0, 0);
-            } else {
-                const atlasX = ASCII_ATLAS.charMap.get(p.char) ?? 0;
-                const cw = 14, ch = 22;
-                ctx.drawImage(ASCII_ATLAS.canvas, atlasX, ch * 2, cw, ch, -(cw * scale) / 2, -(ch * scale) / 2, cw * scale, ch * scale);
             }
             ctx.restore();
         }

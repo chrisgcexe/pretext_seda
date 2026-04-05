@@ -1,14 +1,15 @@
-html,
-body {
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    background: #fdfcf0;
-    overflow-x: hidden;
+html {
+    background: #fdfcf0; /* Fondo base en el nivel más bajo */
 }
 
 body {
-    padding: 120px 20px; /* Reduced vertical padding, added horizontal padding */
+    margin: 0;
+    padding: 120px 20px;
+    width: 100%;
+    background: transparent; /* Cuerpo transparente para ver la brújula */
+    overflow-x: hidden;
+    position: relative;
+    z-index: 1; /* Texto por encima de la brújula */
     color: #ffffff;
     font-family: 'Courier New', monospace;
     font-size: 18px;
@@ -16,6 +17,36 @@ body {
     flex-direction: column;
     align-items: center;
 }
+
+/* NARRATIVE COMPASS (HIDDEN) */
+#narrative-compass, #compass-svg, .compass-node-text, .compass-thread {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+/* 
+PLACEHOLDER: El resto de estilos del compás han sido removidos para evitar confusiones.
+*/
+
+.memo-reset-btn {
+    pointer-events: all;
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgba(139, 69, 19, 0.05);
+    border: 1px solid rgba(139, 69, 19, 0.1);
+    color: rgba(139, 69, 19, 0.4);
+    font-size: 8px;
+    text-transform: uppercase;
+    cursor: pointer;
+    padding: 4px 12px;
+    border-radius: 12px;
+    transition: all 0.3s ease;
+    z-index: 100; /* Siempre por encima */
+}
+.memo-reset-btn:hover { background: rgba(139, 69, 19, 0.1); color: #8B4513; }
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
@@ -36,8 +67,7 @@ body {
 .zona-viaje {
     width: 100%;
     position: relative;
-    /* Altura dinámica controlada por JS */
-    margin: 60px 0; /* Marginal smaller on mobile */
+    margin: 60px 0;
     display: flex;
     justify-content: center;
     align-items: flex-start;
@@ -55,8 +85,8 @@ canvas.hilo-narrativo {
     display: block;
     z-index: 10;
     position: relative;
-    max-width: 100%; /* Responsive canvas */
-    height: auto !important; /* Keep aspect ratio if needed, but JS handles size */
+    max-width: 100%;
+    height: auto !important;
     background: transparent;
     color: #010101;
     font-weight: 400;
@@ -79,29 +109,79 @@ canvas.hilo-narrativo {
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: 15; /* Por encima de .hilo-narrativo (z-index 10) */
+    z-index: 15;
     pointer-events: none;
 }
 
+/* NARRATIVE TEXT */
 .normal-text {
     width: 100%;
     box-sizing: border-box;
     max-width: 580px;
     font-family: 'Courier New', monospace;
-    font-size: clamp(14px, 4.2vw, 16px); /* Fuente fluida proporcional */
+    font-size: clamp(14px, 4.2vw, 16px);
     line-height: 1.7;
     letter-spacing: 0.01em;
     text-align: left;
     margin: 4rem auto;
-    padding: 0 8vw; /* Padding proporcional idéntico al motor ASCII */
+    padding: 0 8vw;
     color: #0d0900;
     font-weight: 400;
+    background: transparent;
+    position: relative;
+    z-index: 10;
 }
 
 @media (min-width: 769px) {
     .normal-text {
         margin: 6rem auto;
-        padding: 0; /* En desktop el centrado auto es suficiente */
+        padding: 0;
         font-size: 16px;
     }
+}
+
+/* --- SILK CANVAS OVERLAY --- */
+.silk-overlay-canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 20;
+    background: transparent;
+}
+
+.p-initial-fray {
+    position: relative;
+    z-index: 5;
+    visibility: visible;
+    color: transparent; /* El texto es invisible pero reserva su espacio */
+    font-family: 'Courier New', monospace;
+    font-size: clamp(14px, 4.2vw, 16px);
+}
+
+.fray-segment {
+    color: transparent;
+    position: relative;
+    display: inline;
+}
+
+.static-segment {
+    color: #0d0900;
+    display: inline;
+}
+
+/* --- EFECTO HILO DESGARRO (Legacy Support) --- */
+.fray-char {
+    display: inline-block;
+    white-space: pre;
+    will-change: transform, opacity, left, top;
+    transition: none;
+    pointer-events: none;
+}
+
+#unravel-thread {
+    pointer-events: none;
+    transition: opacity 0.3s ease;
 }
