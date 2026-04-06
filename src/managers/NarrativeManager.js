@@ -22,7 +22,6 @@ export const FRAY_SCROLL_SENSITIVITY = 0.00025;
 export const FRAY_LERP_FACTOR = 0.06;  
 
 export let silkCoreP0 = null;
-export let frayCompletionTime = null; 
 
 // --- FUNCIONES CORE ---
 
@@ -38,30 +37,25 @@ export function lockScroll(e) {
     if (isTransitionLocked) {
         e.preventDefault();
 
-        // FIX 3: Si el hilo está roto y colgando, el usuario está "atrapado".
-        // No le permitimos bajar el progreso scrolleando hacia arriba.
+        // 1. EL ENCIERRO: Si el hilo se cortó y está colgando, el usuario está atrapado.
+        // Ignoramos la rueda del mouse por completo. La única salida es coserlo a mano.
         if (silkCoreP0 && silkCoreP0.isBroken && !silkCoreP0.isRepaired) {
-            updateTargetFrayProgress(1.0); // Aseguramos que se mantenga al final
-            frayCompletionTime = null;
             return false;
         }
 
+        // 2. TENSIÓN: Aplicamos la sensibilidad del scroll
         updateTargetFrayProgress(e.deltaY * FRAY_SCROLL_SENSITIVITY);
 
+        // 3. LOS LÍMITES
         if (targetFrayProgress >= 1) {
-            if (silkCoreP0 && silkCoreP0.isBroken && !silkCoreP0.isRepaired) { frayCompletionTime = null; return false; }
-            if (frayCompletionTime === null) frayCompletionTime = Date.now();
-            if (Date.now() - frayCompletionTime > 500) {
-                isTransitionLocked = false;
-                frayCompletionTime = null;
-            }
+            // MURO DE TENSIÓN: Ya no hay temporizador. 
+            // Sostenemos la tensión al 100% obligando al Lerp visual a alcanzar el 0.99 para que haga SNAP.
         } else if (targetFrayProgress <= 0) {
+            // ABORTO NATURAL: El usuario se arrepintió, scrolleó todo hacia arriba y soltó la tensión.
             isTransitionLocked = false;
             setFrayTransitionStarted(false);
-            frayCompletionTime = null;
-        } else {
-            frayCompletionTime = null;
         }
+        
         return false;
     }
 }
@@ -73,6 +67,7 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
         const trans = new LandTransition(ultimoTextoLeido, textoParrafo, contenedorPadre, ultimoElementoInyectado, null);
         trans.track.id = `parrafo-viaje-${index}`;
         trans.track.setAttribute('data-index', index);
+        trans.canvas.id = `camino-${activeTransitions.length + 1}`; 
         activeTransitions.push(trans);
     }
     ultimoTextoLeido = textoParrafo;
@@ -178,6 +173,7 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
     textCanvas.style.width = `${trueWidth}px`;
     textCanvas.style.height = `${trueHeight}px`;
     textCanvas.classList.add('hilo-narrativo');
+    textCanvas.id = `barco-${activeOceans.length + 1}`;
 
     let ctx = textCanvas.getContext('2d');
     ctx.scale(dpi, dpi);
@@ -191,11 +187,26 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
         });
     }
 
+    // --- MÁSCARA DE FONDO (Carcasa v4.12: Aire Ampliado) ---
+    // Aumentamos el margen para que el barco se sienta más sólido
+    ctx.fillStyle = '#fdfcf0'; 
+    linesArray.forEach((line, i) => {
+        const h = PADDING + i * LINE_HEIGHT;
+        const x = lineInfo[i].startX;
+        const w = line.width;
+        // Margen Izquierdo (20px), Margen Derecho (5px - 'a ráz'), Vertical (4px)
+        // Esto respeta la forma orgánica del párrafo en su lado derecho
+        ctx.fillRect(x - 20, h - 4, w + 25, LINE_HEIGHT + 8);
+    });
+
     ctx.fillStyle = '#111';
     linesArray.forEach((line, i) => {
         const h = PADDING + i * LINE_HEIGHT;
         ctx.fillText(line.text, lineInfo[i].startX, h);
     });
+
+    asciiCanvas.id = `oceano-${activeOceans.length + 1}`;
+    effectsCanvas.id = `espuma-${activeOceans.length + 1}`;
 
     track.style.height = (trueHeight + window.innerHeight * 2.5) + "px";
     track.appendChild(asciiCanvas);

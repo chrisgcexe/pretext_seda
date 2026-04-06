@@ -42,6 +42,7 @@ export class ASCIIOcean {
         this.time = 0;
         this.isVisible = false;
         this.isSleeping = false;
+        this.sleepFactor = 0; // v4.8: Factor de transición suave (0 a 1)
         this.framesInactive = 0;
 
         this.overflowTop = 800;
@@ -117,18 +118,18 @@ export class ASCIIOcean {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         this.effectsCtx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // --- OPTIMIZACIÓN SLEEPING ---
-        // Si el barco no se mueve y no hay efectos activos, bajamos la intensidad
-        const isStationary = Math.abs(this.targetOffset - this.currentOffset) < 0.01;
+        // --- OPTIMIZACIÓN SLEEPING (v4.9: Transición de Energía Cero) ---
+        const isStationary = Math.abs(this.targetOffset - this.currentOffset) < 0.01; // Umbral más estricto (v4.8 era 0.1)
         const hasActiveEffects = this.splashes.length > 0 || this.droplets.length > 0 || this.isDripping;
         
-        if (isStationary && !hasActiveEffects) {
-            this.framesInactive++;
-            if (this.framesInactive > 120) this.isSleeping = true;
+        // El 'sleepFactor' controla la intensidad de los efectos de idle y la entrada en Fast-Path
+        if (isStationary && !hasActiveEffects && this.isSubmerged) {
+            this.sleepFactor = Math.min(1, this.sleepFactor + 0.01); // 1.5 segundos para dormir totalmente
         } else {
-            this.framesInactive = 0;
-            this.isSleeping = false;
+            this.sleepFactor = Math.max(0, this.sleepFactor - 0.05); // Despertar rápido
         }
+        
+        this.isSleeping = this.sleepFactor > 0.98;
 
         ctx.save();
         this.effectsCtx.save();
@@ -160,7 +161,20 @@ export class ASCIIOcean {
         }
 
         this.currentOffset += (this.targetOffset - this.currentOffset) * 0.08;
-        vesselCanvas.style.transform = `translateY(${this.currentOffset}px)`;
+        
+        let sway = 0;
+        let bob = 0;
+        if (this.isSubmerged && this.sleepFactor > 0.01) {
+            // Bamboleo refinado (v4.6) + Suavizado (v4.8)
+            const t = this.time * 0.05;
+            const noiseSway = Math.sin(t * 2.1) * 0.15 + Math.cos(t * 0.8) * 0.1;
+            const noiseBob = Math.sin(t * 1.7) * 0.3 + Math.cos(t * 1.3) * 0.2;
+            
+            // Multiplicamos por sleepFactor para una entrada suave
+            sway = ((Math.sin(t) * 0.75) + noiseSway) * this.sleepFactor;
+            bob = ((Math.cos(t * 0.8) * 0.9) + noiseBob) * this.sleepFactor;
+        }
+        vesselCanvas.style.transform = `translateY(${this.currentOffset + bob}px) rotate(${sway}deg)`;
 
         const vRect = vesselCanvas.getBoundingClientRect();
         const vL = vRect.left - rect.left;
@@ -318,17 +332,17 @@ export class ASCIIOcean {
                     }
                 }
 
-                if (inHullRange && !this.isSleeping) {
-                    let activeW, activeStartX;
-                    const lineIdx = Math.floor((homeY - boxTop) / LINE_H);
-                    if (lineIdx >= 0 && lineIdx < numLines) {
-                        activeW = this.lineInfo[lineIdx]?.width || 0;
-                        activeStartX = this.lineInfo[lineIdx]?.startX || 120;
-                    } else {
-                        activeW = (this.lineInfo[numLines - 1]?.width || 0) * 0.6;
-                        activeStartX = 120 + 225 - (activeW / 2);
-                    }
+                let activeW, activeStartX;
+                const lineIdx = Math.floor((homeY - boxTop) / LINE_H);
+                if (lineIdx >= 0 && lineIdx < numLines) {
+                    activeW = this.lineInfo[lineIdx]?.width || 0;
+                    activeStartX = this.lineInfo[lineIdx]?.startX || 120;
+                } else {
+                    activeW = (this.lineInfo[numLines - 1]?.width || 0) * 0.6;
+                    activeStartX = 120 + 225 - (activeW / 2);
+                }
 
+                if (inHullRange && !this.isSleeping) {
                     const vL_col = vL + activeStartX - 40;
                     const vR_col = vL + activeStartX + activeW + 40;
 
@@ -353,18 +367,45 @@ export class ASCIIOcean {
                     }
                 }
 
-                // FIX: Fast-path (Ahorro masivo). Si no hay colisiones, no estamos en la orilla 
-                // superior, y la letra ya descansó (ox/oy < 0.5), dibujamos directo y saltamos el resorte.
+                // FIX: Fast-path (v4.9). Umbral más estricto (0.1 en vez de 0.5) para evitar saltos.
                 if (skipCollisions && !isTopShore) {
-                    if (Math.abs(this.ox[idx]) < 0.5 && Math.abs(this.oy[idx]) < 0.5) {
-                        this.ox[idx] = 0; this.oy[idx] = 0;
+                    if (Math.abs(this.ox[idx]) < 0.1 && Math.abs(this.oy[idx]) < 0.1) {
+                        // Decaimiento gradual de energía residual en vez de reset instantáneo
+                        this.ox[idx] *= 0.8; 
+                        this.oy[idx] *= 0.8;
                         const mX = (c - shift) & patternMask;
                         const mY = (r - shift) & patternMask;
                         const patternVal = matrix[mY * patternSize + mX];
                         const char = recentText[(c + r * numCols) % textLen] || ' ';
                         const atlasX = ASCII_ATLAS.charMap.get(char) ?? 0;
                         const atlasY = (patternVal === 1) ? charSize.h : 0;
-                        ctx.drawImage(ASCII_ATLAS.canvas, atlasX, atlasY, charSize.w, charSize.h, homeX, homeY, charSize.w, charSize.h);
+                        
+                        // FIX: Micro-Ripple (v4.6) + Water Bob (v4.7)
+                        // Evitamos que el océano se congele totalmente.
+                        const t = this.time;
+                        let rippleX = Math.sin(t * 0.1 + c * 0.2) * 0.4;
+                        let rippleY = Math.cos(t * 0.08 + r * 0.3) * 0.3;
+                        
+                        // Water Bob: Perturbación extra cerca del barco cuando flota en idle
+                        if (this.sleepFactor > 0.01 && inHullRange) {
+                            const vL_col = vL + activeStartX - 40;
+                            const vR_col = vL + activeStartX + activeW + 40;
+                            const closestX = Math.max(vL_col, Math.min(cX, vR_col));
+                            const closestY = Math.max(boxTop, Math.min(cY, boxBot));
+                            const bDx = cX - closestX;
+                            const bDy = cY - closestY;
+                            const bDSq = bDx * bDx + bDy * bDy;
+                            
+                            const influenceRadiusSq = vRadiusSq * 2.2;
+                            if (bDSq < influenceRadiusSq) {
+                                const prox = 1 - Math.sqrt(bDSq) / Math.sqrt(influenceRadiusSq);
+                                // Multiplicamos por sleepFactor para suavizar la entrada
+                                rippleY += Math.sin(t * 0.15 + prox * 4) * (4.0 * prox * this.sleepFactor);
+                                rippleX += Math.cos(t * 0.10 + prox * 2) * (1.5 * prox * this.sleepFactor);
+                            }
+                        }
+                        
+                        ctx.drawImage(ASCII_ATLAS.canvas, atlasX, atlasY, charSize.w, charSize.h, homeX + rippleX, homeY + rippleY, charSize.w, charSize.h);
                         continue;
                     }
                 }
@@ -390,6 +431,7 @@ export class ASCIIOcean {
                 const char = recentText[(c + r * numCols) % textLen] || ' ';
                 const atlasX = ASCII_ATLAS.charMap.get(char) ?? 0;
                 const atlasY = (patternVal === 1) ? charSize.h : 0;
+
                 ctx.drawImage(ASCII_ATLAS.canvas, atlasX, atlasY, charSize.w, charSize.h, homeX + this.ox[idx], homeY + this.oy[idx], charSize.w, charSize.h);
             }
         }
