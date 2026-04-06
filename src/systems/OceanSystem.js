@@ -141,8 +141,8 @@ export class ASCIIOcean {
 
         const viewportTop = -rect.top;
         const viewportBottom = viewportTop + vH;
-        const startR = Math.max(0, Math.floor((viewportTop - 400) / charSize.h));
-        const endR = Math.min(numRows, Math.ceil((viewportBottom + 400) / charSize.h));
+        const startR = Math.max(0, Math.floor((viewportTop - 100) / charSize.h));
+        const endR = Math.min(numRows, Math.ceil((viewportBottom + 100) / charSize.h));
 
         const surfTime = this.time * 0.06;
         const textLen = recentText.length;
@@ -290,10 +290,11 @@ export class ASCIIOcean {
                 let repulsionX = 0;
                 let repulsionY = 0;
 
-                // Si la fila no está en la ROI y el océano está durmiendo, saltamos las físicas
-                const skipPhysics = !isRowInROI && this.isSleeping;
+                // FIX: La lógica era defectuosa. Saltamos colisiones si NO estamos en la ROI,
+                // O si el océano entero está durmiendo.
+                const skipCollisions = !isRowInROI || this.isSleeping;
 
-                if (!skipPhysics && this.splashes.length > 0) {
+                if (!skipCollisions && this.splashes.length > 0) {
                     for (let i = 0; i < this.splashes.length; i++) {
                         const s = this.splashes[i];
                         const dxS = cX - s.x;
@@ -317,7 +318,7 @@ export class ASCIIOcean {
                     }
                 }
 
-                if (inHullRange) {
+                if (inHullRange && !this.isSleeping) {
                     let activeW, activeStartX;
                     const lineIdx = Math.floor((homeY - boxTop) / LINE_H);
                     if (lineIdx >= 0 && lineIdx < numLines) {
@@ -350,11 +351,13 @@ export class ASCIIOcean {
                             repulsionY = (dy / d) * f;
                         }
                     }
-                    }
-                } else if (!isRowInROI) {
-                    // Si el barco no está en el área, saltamos también los buffers de ShoreWave
-                    // a menos que estemos en la orilla superior
-                    if (!isTopShore && this.isSleeping) {
+                }
+
+                // FIX: Fast-path (Ahorro masivo). Si no hay colisiones, no estamos en la orilla 
+                // superior, y la letra ya descansó (ox/oy < 0.5), dibujamos directo y saltamos el resorte.
+                if (skipCollisions && !isTopShore) {
+                    if (Math.abs(this.ox[idx]) < 0.5 && Math.abs(this.oy[idx]) < 0.5) {
+                        this.ox[idx] = 0; this.oy[idx] = 0;
                         const mX = (c - shift) & patternMask;
                         const mY = (r - shift) & patternMask;
                         const patternVal = matrix[mY * patternSize + mX];
@@ -364,12 +367,12 @@ export class ASCIIOcean {
                         ctx.drawImage(ASCII_ATLAS.canvas, atlasX, atlasY, charSize.w, charSize.h, homeX, homeY, charSize.w, charSize.h);
                         continue;
                     }
-                    
-                    const waveT = (1.6 + noiseT) * charSize.h + waterLineFull;
-                    const waveB = canvas.height - (1.6 + noiseB) * charSize.h;
-                    if (homeY < waveT || homeY > waveB) {
-                        if (Math.abs(this.oy[idx]) < 1 && Math.abs(this.ox[idx]) < 1) continue;
-                    }
+                }
+
+                const waveT = (1.6 + noiseT) * charSize.h + waterLineFull;
+                const waveB = canvas.height - (1.6 + noiseB) * charSize.h;
+                if (homeY < waveT || homeY > waveB) {
+                    if (Math.abs(this.oy[idx]) < 1 && Math.abs(this.ox[idx]) < 1) continue;
                 }
 
                 const springTargetY = isTopShore ? (this.shoreWaveBuffer[c] * waveFactor) : 0;

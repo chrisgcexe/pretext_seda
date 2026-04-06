@@ -103,12 +103,7 @@ export class LandTransition {
             canvas.height = rect.height * dpi;
         }
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.save();
-        ctx.scale(dpi, dpi);
-
         // --- OPTIMIZACIÓN SLEEPING ---
-        // Si no hay cambio en el progreso y no hay partículas activas, dormimos el render
         const deltaProgress = Math.abs(progress - (this.prevProgress || 0));
         const hasParticles = this.dust.length > 0;
         
@@ -116,13 +111,17 @@ export class LandTransition {
             this.framesInactive++;
             if (this.framesInactive > 30) {
                 this.isSleeping = true;
-                ctx.restore();
-                return;
             }
         } else {
             this.framesInactive = 0;
             this.isSleeping = false;
         }
+
+        if (this.isSleeping) return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+        ctx.scale(dpi, dpi);
 
         const w = rect.width;
         const h = rect.height;
@@ -134,7 +133,6 @@ export class LandTransition {
         let groundY = 0;
         let opacity3D = 1;
         let tiltProgress = 0;
-        const deltaProgress = Math.abs(progress - this.prevProgress);
         this.prevProgress = progress;
 
         const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
