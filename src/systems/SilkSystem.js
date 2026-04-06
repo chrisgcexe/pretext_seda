@@ -207,10 +207,6 @@ export class SilkCanvas {
             if (!isInView) return; 
         }
 
-        // --- OPTIMIZACIÓN SLEEPING ---
-        // Si el hilo está en reposo y no hay interacción, saltamos el procesado pesado.
-        if (this.isSleeping && !this.isDragging) return;
-
         // FIX 1: Una vez que el tejido se rompe o se repara, la animación no tiene marcha atrás.
         if (this.isBroken || this.isRepaired) {
             progress = 1.0;
@@ -405,6 +401,7 @@ export class SilkCanvas {
     }
 
     updatePhysics(xStart, yStart, xEnd, yEnd) {
+        if (this.isSleeping && !this.isDragging) return;
         const gravity = 0.001, friction = 0.90, iterations = 15;
         this.nodes[0].x = xStart; this.nodes[0].y = yStart;
         const last = this.nodes[this.nodeCount - 1];
@@ -506,6 +503,7 @@ export class SilkCanvas {
     }
 
     updateAnchorPhysics(xStart, yStart, xEnd, yEnd, isBroken) {
+        if (this.isSleeping && !this.isDragging) return;
         // AMORTIGUACIÓN Y FLEXIBILIDAD: Fricción más alta para controlar el 'pop'
         const friction = 0.82; 
         
