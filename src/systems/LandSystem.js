@@ -36,6 +36,11 @@ export class LandTransition {
         this.isVisible = false;
         this.ctx = this.canvas.getContext('2d');
         this.hasScrolledOnGround = false; 
+        
+        // --- PERFORMANCE ARMOR (v4.0) ---
+        this.isSleeping = false;
+        this.framesInactive = 0;
+        
         this.tornCharacters = new Map();
         
         const combined = (toText + (fromElement ? fromElement.innerText : '')).replace(/\s/g, '');
@@ -101,6 +106,23 @@ export class LandTransition {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.save();
         ctx.scale(dpi, dpi);
+
+        // --- OPTIMIZACIÓN SLEEPING ---
+        // Si no hay cambio en el progreso y no hay partículas activas, dormimos el render
+        const deltaProgress = Math.abs(progress - (this.prevProgress || 0));
+        const hasParticles = this.dust.length > 0;
+        
+        if (deltaProgress < 0.00001 && !hasParticles) {
+            this.framesInactive++;
+            if (this.framesInactive > 30) {
+                this.isSleeping = true;
+                ctx.restore();
+                return;
+            }
+        } else {
+            this.framesInactive = 0;
+            this.isSleeping = false;
+        }
 
         const w = rect.width;
         const h = rect.height;

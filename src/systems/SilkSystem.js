@@ -25,7 +25,7 @@ export class SilkCanvas {
 
         this.nodes = [];
         this.anchorNodes = []; 
-        this.nodeCount = 25; 
+        this.nodeCount = 80; // SUPER-FIDELIDAD: 80 nodos físicos para curvas perfectas
         for (let i = 0; i < this.nodeCount; i++) {
             this.nodes.push({ x: 0, y: 0, oldX: 0, oldY: 0, pinned: (i === 0) });
             this.anchorNodes.push({ x: 0, y: 0, oldX: 0, oldY: 0, pinned: (i === 0) });
@@ -39,17 +39,18 @@ export class SilkCanvas {
         this.mouseY = 0;
         this.repairScrollY = 0;
         
-        // --- SEGUIMIENTO DE INERCIA ---
-        this.lastScrollY = window.scrollY;
-        this.scrollVelocity = 0;
+        // --- OPTIMIZACIÓN PERFORMANCE ARMOR (v3.5) ---
+        this.isSleeping = false;
+        this.framesInactive = 0;
+        this.lastScrollY = window.scrollY; // Inicialización redundante para seguridad
         
         this.setupInteraction();
     }
 
     // --- MOTOR DE INTERACCIÓN (MOUSE/TOUCH) ---
     setupInteraction() {
-        // Escuchamos el mousedown solo en el canvas
         this.canvas.addEventListener('mousedown', (e) => {
+            this.wakeUp(); // Despertar al tocar
             if (!this.isBroken || this.isRepaired) return;
             
             // Buscamos la punta libre del hilo (el último nodo físico)
@@ -98,17 +99,44 @@ export class SilkCanvas {
                             this.isBroken = false;
                             this.isRepaired = true;
                             this.repairScrollY = window.scrollY;
-                            this.canvas.style.pointerEvents = 'none'; // El canvas vuelve a ser fantasma
+                            this.repairStartTime = Date.now(); 
                             
-                            // El párrafo resucita violentamente
-                            const pElement = this.hangingTarget.parentElement;
-                            pElement.style.transform = 'translateY(0) rotate(0deg)';
-                            pElement.style.opacity = '1';
+                            // 1. CAPTURA DE TENSIÓN INICIAL: Bloqueamos la distancia para que el ascenso 
+                            // genere la panza como consecuencia física (acercamiento de anclajes).
+                            const rect = this.hangingTarget.getBoundingClientRect();
+                            this.repairStartDist = Math.hypot(rect.left - (typeof targetX === 'number' ? targetX : window.innerWidth * 0.05), (rect.top + rect.height / 2) - (typeof targetY === 'number' ? targetY : window.innerHeight * 0.15));
+
+                            this.canvas.style.pointerEvents = 'none'; 
+                            
+                            // 2. EL TIRÓN (REBOTE FÍSICO)
+                            this.anchorNodes.forEach((n, i) => {
+                                if (i > 0 && i < this.nodeCount - 1) {
+                                    n.oldY = n.y + 15; 
+                                    n.oldX += (Math.random() - 0.5) * 10;
+                                }
+                            });
+
+                            // 3. RESURRECCIÓN ELÁSTICA (CON INERCIA/RETRASO)
+                            setTimeout(() => {
+                                const pElement = this.hangingTarget.parentElement;
+                                pElement.style.transition = 'all 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)'; 
+                                pElement.style.transform = 'translateY(0) rotate(0deg)';
+                                pElement.style.opacity = '1';
+                            }, 300); // Pausa de 0.3s para vender la inercia del bloque de texto
                         }
                     }
                 }
             }
         });
+
+        window.addEventListener('scroll', () => {
+            this.wakeUp(); // Despertar ante el scroll
+        });
+    }
+
+    wakeUp() {
+        this.isSleeping = false;
+        this.framesInactive = 0;
     }
 
     setup() {
@@ -167,19 +195,30 @@ export class SilkCanvas {
         if (!this.isInitialized) { this.setup(); if (!this.isInitialized) return; }
         if (!this.hasResized) { this.resize(); this.hasResized = true; }
 
+        // Calculamos velocidad de scroll SIEMPRE para mantener el delta correcto
+        const currentScroll = window.scrollY;
+        this.scrollVelocity = (currentScroll - this.lastScrollY) * 0.95; 
+        this.lastScrollY = currentScroll;
+
+        // OPTIMIZACIÓN CULLING: Si está reparado y fuera de pantalla, ahorramos CPU
+        if (this.isRepaired) {
+            const rect = this.container.getBoundingClientRect();
+            const isInView = (rect.bottom > -200 && rect.top < window.innerHeight + 200);
+            if (!isInView) return; 
+        }
+
+        // --- OPTIMIZACIÓN SLEEPING ---
+        // Si el hilo está en reposo y no hay interacción, saltamos el procesado pesado.
+        if (this.isSleeping && !this.isDragging) return;
+
         // FIX 1: Una vez que el tejido se rompe o se repara, la animación no tiene marcha atrás.
-        // Forzamos el progreso al máximo para que la 'J' quede anclada arriba.
         if (this.isBroken || this.isRepaired) {
             progress = 1.0;
         }
 
         const ctx = this.ctx;
-        ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-
-        // Calculamos velocidad de scroll para inyectarla en los nodos
-        const currentScroll = window.scrollY;
-        this.scrollVelocity = (currentScroll - this.lastScrollY) * 0.95; // Amortiguación de velocidad
-        this.lastScrollY = currentScroll;
+        const dpr = window.devicePixelRatio || 1;
+        ctx.clearRect(0, 0, this.canvas.width / dpr, this.canvas.height / dpr);
 
         ctx.save();
         if (this.isRepaired) ctx.translate(0, this.repairScrollY - window.scrollY);
@@ -209,6 +248,10 @@ export class SilkCanvas {
             this.drawSilk(ctx);
         }
 
+        const fSizeMatch = this.fontString.match(/\d+(\.\d+)?/);
+        const baseSize = fSizeMatch ? parseFloat(fSizeMatch[0]) : 16;
+        const jFont = `700 ${baseSize * 1.25}px "Courier New", monospace`;
+
         this.chars.forEach((c, i) => {
             const isFrayLimit = (i === this.chars.length - 1); 
             const sX = pRect.left + c.homeX;
@@ -227,14 +270,47 @@ export class SilkCanvas {
                 c.opacity = (c.char === "J") ? 1 : Math.max(0, Math.min(1, (0.95 - elastic) * 10));
             } else {
                 const distFromActive = i - currentIdx;
-                if (distFromActive < 10) { 
-                    const prevChar = this.chars[i - 1];
-                    const sameLine = Math.abs(prevChar.homeY - c.homeY) < 10;
-                    if (sameLine) {
-                        const tensionFactor = 1 - (distFromActive / 10);
-                        c.curX = sX + (prevChar.curX - sX) * (0.2 * tensionFactor);
-                        c.curY = sY + (prevChar.curY - sY) * (0.2 * tensionFactor);
-                        this.drawThread(ctx, prevChar.curX, prevChar.curY, c.curX, c.curY, 0.3 * tensionFactor);
+                
+                if (distFromActive < 10 && c.isVisible) { 
+                    let prevChar = null;
+                    let prevIdx = -1;
+                    // Buscamos la última letra visible
+                    for (let k = i - 1; k >= 0; k--) {
+                        if (this.chars[k].isVisible) {
+                            prevChar = this.chars[k];
+                            prevIdx = k;
+                            break;
+                        }
+                    }
+
+                    if (prevChar) {
+                        const sameLine = Math.abs(prevChar.homeY - c.homeY) < 15;
+                        // MAGIA: Si la diferencia de índice es 1, están pegadas (misma palabra)
+                        const isSameWord = (i - prevIdx === 1); 
+                        
+                        if (sameLine) {
+                            const tensionFactor = 1 - (distFromActive / 10);
+                            const distVisual = Math.hypot(c.curX - prevChar.curX, c.curY - prevChar.curY);
+                            
+                            if (isSameWord) {
+                                // HILO DE LETRA (Intra-palabra): Fuerte, tira de la letra y nunca se corta
+                                c.curX = sX + (prevChar.curX - sX) * (0.2 * tensionFactor);
+                                c.curY = sY + (prevChar.curY - sY) * (0.2 * tensionFactor);
+                                this.drawThread(ctx, prevChar.curX, prevChar.curY, c.curX, c.curY, 0.3 * tensionFactor);
+                            } else {
+                                // HILO DE PALABRA (Puente de Espacio): Tira muy suave y es frágil
+                                if (distVisual < 45) { // SNAP! Se rompe si la palabra anterior ya voló
+                                    c.curX = sX + (prevChar.curX - sX) * (0.05 * tensionFactor);
+                                    c.curY = sY + (prevChar.curY - sY) * (0.05 * tensionFactor);
+                                    this.drawThread(ctx, prevChar.curX, prevChar.curY, c.curX, c.curY, 0.15 * tensionFactor);
+                                } else {
+                                    // El puente se rompió, la letra espera tranquila su turno
+                                    c.curX = sX; c.curY = sY;
+                                }
+                            }
+                        } else {
+                            c.curX = sX; c.curY = sY;
+                        }
                     } else {
                         c.curX = sX; c.curY = sY;
                     }
@@ -268,30 +344,51 @@ export class SilkCanvas {
                         pElement.style.opacity = '0.3';
                     }
 
-                    // 2. OBJETIVO DEL HILO (COORDENADAS LOCALES)
-                    const scrollOffset = this.isRepaired ? (this.repairScrollY - window.scrollY) : 0;
-                    
-                    // Anclaje J (en espacio local del canvas traducido coincide con dX, dY)
-                    const localJX = dX;
-                    const localJY = dY; 
-
-                    // Anclaje o (traducido al espacio local del canvas)
+                    // 2. OBJETIVO DEL HILO Y DISTANCIA
                     let targetX = rect.left;
-                    let targetY = rect.top + rect.height / 2 - scrollOffset;
+                    let targetY = rect.top + rect.height / 2;
+                    if (this.isRepaired) targetY -= (this.repairScrollY - window.scrollY);
+
+                    let distRealToO = 1000;
+                    this.magneticEase = 0; // Reseteamos ease en cada frame
 
                     if (this.isBroken) {
                         if (this.isDragging) {
                             targetX = this.mouseX;
-                            targetY = this.mouseY - scrollOffset;
+                            targetY = this.mouseY;
+                            distRealToO = Math.hypot(this.mouseX - rect.left, this.mouseY - (rect.top + rect.height / 2));
+                            
+                            // Cálculo de proximidad magnética
+                            const proximity = Math.max(0, 1 - (distRealToO / 250));
+                            this.magneticEase = proximity * proximity;
                         } else {
-                            targetX = localJX + (Math.sin(Date.now() * 0.003) * 15);
-                            targetY = localJY + 150;
+                            targetX = c.curX + (Math.sin(Date.now() * 0.003) * 15); 
+                            targetY = c.curY + 150; 
                         }
                     }
 
-                    // 3. ACTUALIZACIÓN DE FÍSICAS
+                    if (this.isRepaired) this.magneticEase = 1.0; 
+
+                    // --- FEEDBACK VISUAL MAGNÉTICO PARA LA 'O' ---
+                    const targetDOM = document.getElementById('target-o');
+                    if (targetDOM) {
+                        if (this.magneticEase > 0) {
+                            // Estética ASCII pura: Bold real y escala dura, cero blur.
+                            // El contenedor de 1ch evita que el párrafo colapse o salte.
+                            targetDOM.style.fontWeight = this.magneticEase > 0.15 ? '700' : '400';
+                            targetDOM.style.transform = `scale(${1.0 + (0.25 * this.magneticEase)})`;
+                            targetDOM.style.color = '#0d0900'; 
+                        } else {
+                            targetDOM.style.fontWeight = '400';
+                            targetDOM.style.transform = 'scale(1)';
+                            targetDOM.style.color = '#0d0900';
+                        }
+                    }
+
+                    // 3. ACTUALIZACIÓN DE FÍSICAS (Con sincronización de coordenadas locales)
+                    const scrollOffset = this.isRepaired ? (this.repairScrollY - window.scrollY) : 0;
                     if (distMoved > 2 || this.isBroken || this.isRepaired) {
-                        this.updateAnchorPhysics(localJX, localJY, targetX, targetY, this.isBroken);
+                        this.updateAnchorPhysics(dX, dY, targetX - (this.isRepaired ? 0 : 0), targetY - (this.isRepaired ? 0 : 0), this.isBroken);
                         this.drawAnchorSilk(ctx, this.isBroken);
                     }
                 }
@@ -299,6 +396,7 @@ export class SilkCanvas {
 
             if (c.opacity > 0) {
                 ctx.globalAlpha = c.opacity;
+                ctx.font = (c.char === "J") ? jFont : this.fontString;
                 ctx.fillText(c.char, c.curX, c.curY);
             }
         });
@@ -336,74 +434,101 @@ export class SilkCanvas {
 
     drawSilk(ctx) {
         ctx.save();
-        ctx.beginPath();
-        ctx.strokeStyle = "#4a7a9e"; ctx.lineWidth = 0.8; ctx.globalAlpha = 0.7;
-        ctx.lineJoin = "round"; ctx.lineCap = "round";
-        ctx.moveTo(this.nodes[0].x, this.nodes[0].y);
-        for (let i = 1; i < this.nodeCount - 1; i++) {
-            const p = this.nodes[i], prev = this.nodes[i - 1];
-            ctx.quadraticCurveTo(prev.x, prev.y, (p.x + prev.x) / 2, (p.y + prev.y) / 2);
+        ctx.fillStyle = "#4a7a9e"; 
+        ctx.globalAlpha = 0.85;
+        ctx.font = 'bold 10px "Courier New", monospace';
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        const dotGap = 2.5;
+        let accumulator = 0;
+
+        // SUAVIZADO POR INTERPOLACIÓN: Usamos el algoritmo de punto medio (Quadratic Bezier)
+        // para que los puntos sigan una curva suave y no segmentos rectos.
+        for (let i = 0; i < this.nodeCount - 1; i++) {
+            const p1 = this.nodes[i];
+            const p2 = this.nodes[Math.min(i + 1, this.nodeCount - 1)];
+            const p3 = this.nodes[Math.min(i + 2, this.nodeCount - 1)];
+
+            // Puntos medios para la curva suave
+            const midX1 = (p1.x + p2.x) / 2;
+            const midY1 = (p1.y + p2.y) / 2;
+            const midX2 = (p2.x + p3.x) / 2;
+            const midY2 = (p2.y + p3.y) / 2;
+
+            // Estimación de distancia del arco (aproximada para performance)
+            const arcDist = Math.hypot(midX2 - midX1, midY2 - midY1);
+
+            let t = accumulator / (arcDist || 1);
+            while (t < 1.0) {
+                // Ecuación Quadratic Bezier para el suavizado de la seda
+                const bx = (1-t)*(1-t)*midX1 + 2*(1-t)*t*p2.x + t*t*midX2;
+                const by = (1-t)*(1-t)*midY1 + 2*(1-t)*t*p2.y + t*t*midY2;
+                
+                ctx.fillText('.', bx, by);
+                t += dotGap / (arcDist || 1);
+            }
+            accumulator = (t - 1.0) * arcDist;
         }
-        ctx.lineTo(this.nodes[this.nodeCount - 1].x, this.nodes[this.nodeCount - 1].y);
-        ctx.stroke(); ctx.restore();
+        ctx.restore();
     }
 
     drawThread(ctx, x1, y1, x2, y2, opacity) {
         ctx.save(); 
-        
+        ctx.fillStyle = "#4a7a9e"; 
+        ctx.globalAlpha = opacity * 0.7; // Más sutil
+        ctx.font = '7px "Courier New", monospace'; // Más pequeño
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
         const dx = x2 - x1;
         const dy = y2 - y1;
         const dist = Math.hypot(dx, dy);
         const midX = x1 + dx * 0.5;
         const midY = y1 + dy * 0.5;
-
-        // FIX 4: Adiós a la manguera colgada. El sag ahora es dinámico y mínimo (un rango de 3-8px).
-        // No sale por abajo de las letras, es un trazo fino y apenas curvado.
         const sag = 3 + (dist * 0.035); 
 
-        // FIX 5: RUIDO ÓRGANICO / MÚLTIPLES FIBRAS.
-        // En vez de dibujar una línea gruesa y perfecta, dibujamos tres líneas finísimas
-        // con opacidades y offsets diferentes para simular la textura "peluda" de la seda natural.
-        ctx.lineWidth = 0.5;
-        ctx.lineJoin = "round";
-        ctx.lineCap = "round";
-        
-        // Fibra 1 (Sutil)
-        ctx.beginPath();
-        ctx.strokeStyle = "#4a7a9e"; 
-        ctx.globalAlpha = opacity * 0.4;
-        ctx.moveTo(x1, y1);
-        ctx.quadraticCurveTo(midX + (Math.random() - 0.5) * 3, midY + sag + (Math.random() - 0.5) * 2, x2, y2);
-        ctx.stroke();
+        const cpX = midX;
+        const cpY = midY + sag;
 
-        // Fibra 2 (Principal - Con ruido visual de jitter)
-        ctx.beginPath();
-        ctx.strokeStyle = "#4a7a9e"; 
-        ctx.globalAlpha = opacity * 1.0;
-        ctx.moveTo(x1, y1);
-        ctx.quadraticCurveTo(midX + (Math.sin(Date.now() * 0.005) * 2), midY + sag, x2, y2);
-        ctx.stroke();
+        // Densidad uniforme para hilos finos
+        const dotGap = 3.5;
+        const steps = Math.max(3, Math.floor(dist / dotGap));
 
-        // Fibra 3 (Brillo)
-        ctx.beginPath();
-        ctx.strokeStyle = "#5a8aac"; 
-        ctx.globalAlpha = opacity * 0.6;
-        ctx.moveTo(x1, y1);
-        ctx.quadraticCurveTo(midX + 2, midY + sag - 1, x2, y2);
-        ctx.stroke();
+        for (let i = 0; i < steps; i++) {
+            const t = i / steps;
+            const bx = (1-t)*(1-t)*x1 + 2*(1-t)*t*cpX + t*t*x2;
+            const by = (1-t)*(1-t)*y1 + 2*(1-t)*t*cpY + t*t*y2;
+            ctx.fillText('.', bx, by);
+        }
         
         ctx.restore(); 
     }
 
     updateAnchorPhysics(xStart, yStart, xEnd, yEnd, isBroken) {
-        // AMORTIGUACIÓN Y FLEXIBILIDAD: Bajamos fricción para que la inercia dure más
-        const friction = 0.72; 
-        const iterations = 4; 
+        // AMORTIGUACIÓN Y FLEXIBILIDAD: Fricción más alta para controlar el 'pop'
+        const friction = 0.82; 
         
-        // Gravedad dinámica según estado
-        let gravity = 0.1; 
-        if (isBroken && !this.isDragging) gravity = 0.35; 
-        if (this.isRepaired) gravity = 0.22; 
+        // MOTOR DE COHERENCIA "SEDA": Tirón inicial -> Pausa de Inercia -> Izado -> Relajación
+        const repairAge = this.isRepaired ? (Date.now() - (this.repairStartTime || 0)) : 2000;
+        
+        // El izado físico real ocurre tras 300ms de pausa por inercia
+        const isLifting = repairAge < 1100; 
+        const liftProgress = Math.min(1, Math.max(0, (repairAge - 300) / 800)); 
+        
+        // Fase 1: Tirón violento (instantáneo) | Fase 2: Pausa | Fase 3: Izado graduado
+        const easeLift = liftProgress; 
+
+        // MOTOR DE ITERACIÓN ADAPTATIVA: Bajamos a 6 si está quieto, subimos a 18 si hay acción.
+        let iterations = (isLifting || this.isDragging) ? 18 : 6; 
+        
+        // Gravedad dinámica: Tira hacia arriba después de la pausa para izar
+        let gravity = 0.08; 
+        if (isBroken && !this.isDragging) gravity = 0.32; 
+        if (this.isRepaired) {
+            // Durante la pausa (0-300ms), mantenemos tensión. Tras la pausa (300ms+), izamos.
+            gravity = isLifting ? (-0.12 + (0.32 * liftProgress)) : 0.20; 
+        }
         
         const isPinnedEnd = !isBroken || this.isDragging || this.isRepaired;
         
@@ -415,9 +540,9 @@ export class SilkCanvas {
             this.anchorNodes[this.nodeCount - 1].y = yEnd;
         }
 
-        // Integración Verlet con INYECCIÓN DE VELOCIDAD DE SCROLL
+        // Integración Verlet con INERCIA REACTIVA
         const limit = isPinnedEnd ? this.nodeCount - 1 : this.nodeCount;
-        const scrollImpact = this.isRepaired ? this.scrollVelocity * 0.45 : 0;
+        const scrollImpact = this.isRepaired ? this.scrollVelocity * 0.42 : 0;
 
         for (let i = 1; i < limit; i++) {
             const n = this.anchorNodes[i];
@@ -426,24 +551,33 @@ export class SilkCanvas {
             n.oldX = n.x;
             n.oldY = n.y;
             
-            // Inyectamos la velocidad del scroll opuesta para que el hilo "se quede atrás" (inercia)
             n.x += vx;
             n.y += vy + gravity - scrollImpact; 
 
-            // Pequeño shiver orgánico (vibración de seda)
+            // Micro-vibración orgánica
             if (this.isRepaired) {
-                n.x += (Math.random() - 0.5) * 0.15;
-                n.y += (Math.random() - 0.5) * 0.15;
+                n.x += (Math.random() - 0.5) * 0.1;
+                n.y += (Math.random() - 0.5) * 0.1;
             }
         }
 
-        // CATENARIA ELÁSTICA: Longitud de cuerda
-        let targetLen = 180;
+        // CATENARIA DINÁMICA: CONSECUENCIA FÍSICA (CAUSA -> EFECTO)
+        let targetLen = 135; 
         if (isPinnedEnd) {
             const distRecta = Math.hypot(xEnd - xStart, yEnd - yStart);
-            // Cuando está cosido (repaired), le damos un relaxFactory mayor para que 'panzee'
-            const relaxFactor = this.isRepaired ? 1.25 : 1.15; 
-            targetLen = distRecta * relaxFactor;
+            
+            let relaxFactor = this.isRepaired ? 1.15 : 1.12; 
+            
+            if (isLifting) {
+                // CURVA DE TENSIÓN ABSOLUTA: Hilo de seda tensado al límite físico (0.20)
+                relaxFactor = 0.20; 
+                
+                // El targetLen real basado en la tensión solicitada
+                const startDist = this.repairStartDist || distRecta; 
+                targetLen = (startDist * 0.2); 
+            } else {
+                targetLen = distRecta * relaxFactor;
+            }
         }
         const segLen = targetLen / (this.nodeCount - 1);
 
@@ -464,34 +598,66 @@ export class SilkCanvas {
                 }
             }
         }
+
+        // --- CHEQUEO DE ENERGÍA PARA SLEEPING ---
+        let totalVelocity = 0;
+        for (let i = 0; i < this.nodeCount; i++) {
+            const n = this.anchorNodes[i];
+            totalVelocity += Math.abs(n.x - (n.oldX || n.x)) + Math.abs(n.y - (n.oldY || n.y));
+        }
+
+        // Si la energía es mínima durante 60 frames, ponemos a dormir el hilo.
+        if (totalVelocity < 0.1 && !this.isDragging && !isLifting) {
+            this.framesInactive++;
+            if (this.framesInactive > 60) this.isSleeping = true;
+        } else {
+            this.framesInactive = 0;
+            this.isSleeping = false;
+        }
     }
 
     drawAnchorSilk(ctx, isBroken) {
         ctx.save();
-        ctx.beginPath();
-        // Si está roto, el hilo vibra un poco con un rojo alerta para invitar al click
-        ctx.strokeStyle = isBroken && !this.isDragging ? "#d05151" : "#4a7a9e"; 
-        ctx.lineWidth = isBroken ? 1.5 : 0.8;
-        ctx.globalAlpha = 0.9;
-        ctx.lineJoin = "round";
-        ctx.lineCap = "round";
+        ctx.fillStyle = isBroken && !this.isDragging ? "#d05151" : "#4a7a9e"; 
+        ctx.globalAlpha = 0.95;
+        ctx.font = 'bold 10px "Courier New", monospace';
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
 
-        ctx.moveTo(this.anchorNodes[0].x, this.anchorNodes[0].y);
-        for (let i = 1; i < this.nodeCount - 1; i++) {
-            const p = this.anchorNodes[i];
-            const prev = this.anchorNodes[i - 1];
-            ctx.quadraticCurveTo(prev.x, prev.y, (p.x + prev.x) / 2, (p.y + prev.y) / 2);
+        const n = this.nodeCount;
+        const last = this.anchorNodes[n - 1];
+        
+        // ALTA RESOLUCIÓN PARA HILO MAESTRO: Interpolación Suave Bezier
+        const dotGap = 2.5;
+        let accumulator = 0;
+
+        for (let i = 0; i < n - 1; i++) {
+            const p1 = this.anchorNodes[i];
+            const p2 = this.anchorNodes[Math.min(i + 1, n - 1)];
+            const p3 = this.anchorNodes[Math.min(i + 2, n - 1)];
+
+            const midX1 = (p1.x + p2.x) / 2;
+            const midY1 = (p1.y + p2.y) / 2;
+            const midX2 = (p2.x + p3.x) / 2;
+            const midY2 = (p2.y + p3.y) / 2;
+
+            const arcDist = Math.hypot(midX2 - midX1, midY2 - midY1);
+
+            let t = accumulator / (arcDist || 1);
+            while (t < 1.0) {
+                const bx = (1-t)*(1-t) * midX1 + 2*(1-t)*t*p2.x + t*t*midX2;
+                const by = (1-t)*(1-t) * midY1 + 2*(1-t)*t*p2.y + t*t*midY2;
+                ctx.fillText('.', bx, by);
+                t += dotGap / (arcDist || 1);
+            }
+            accumulator = (t - 1.0) * arcDist;
         }
-        const last = this.anchorNodes[this.nodeCount - 1];
-        ctx.lineTo(last.x, last.y);
-        ctx.stroke();
 
-        // Dibujamos un "nudo" brillante en la punta si está colgando para que el usuario sepa que puede agarrarlo
+        // El nudo ●
         if (isBroken) {
-            ctx.beginPath();
-            ctx.arc(last.x, last.y, this.isDragging ? 2 : 4, 0, Math.PI * 2);
+            ctx.font = 'bold 20px "Courier New", monospace';
             ctx.fillStyle = this.isDragging ? "#4a7a9e" : "#d05151";
-            ctx.fill();
+            ctx.fillText('●', last.x, last.y + 2);
         }
 
         ctx.restore();

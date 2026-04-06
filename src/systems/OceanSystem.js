@@ -41,6 +41,8 @@ export class ASCIIOcean {
         this.charSize = { w: 14, h: 22 };
         this.time = 0;
         this.isVisible = false;
+        this.isSleeping = false;
+        this.framesInactive = 0;
 
         this.overflowTop = 800;
         this.waterTopGap = vesselHeight + 50;
@@ -114,6 +116,19 @@ export class ASCIIOcean {
 
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         this.effectsCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // --- OPTIMIZACIÓN SLEEPING ---
+        // Si el barco no se mueve y no hay efectos activos, bajamos la intensidad
+        const isStationary = Math.abs(this.targetOffset - this.currentOffset) < 0.01;
+        const hasActiveEffects = this.splashes.length > 0 || this.droplets.length > 0 || this.isDripping;
+        
+        if (isStationary && !hasActiveEffects) {
+            this.framesInactive++;
+            if (this.framesInactive > 120) this.isSleeping = true;
+        } else {
+            this.framesInactive = 0;
+            this.isSleeping = false;
+        }
 
         ctx.save();
         this.effectsCtx.save();
@@ -258,6 +273,10 @@ export class ASCIIOcean {
 
             const rowIdx = r * numCols;
             const inHullRange = homeY > hullScanTop && homeY < hullScanBot;
+            
+            // --- OPTIMIZACIÓN ROI (Region of Interest) ---
+            // Solo calculamos físicas pesadas si el barco está en esta fila horizontal
+            const isRowInROI = inHullRange || this.splashes.some(s => Math.abs(homeY - s.y) < 100);
 
             for (let c = 0; c < numCols; c++) {
                 const idx = rowIdx + c;
@@ -271,7 +290,10 @@ export class ASCIIOcean {
                 let repulsionX = 0;
                 let repulsionY = 0;
 
-                if (this.splashes.length > 0) {
+                // Si la fila no está en la ROI y el océano está durmiendo, saltamos las físicas
+                const skipPhysics = !isRowInROI && this.isSleeping;
+
+                if (!skipPhysics && this.splashes.length > 0) {
                     for (let i = 0; i < this.splashes.length; i++) {
                         const s = this.splashes[i];
                         const dxS = cX - s.x;
@@ -328,7 +350,21 @@ export class ASCIIOcean {
                             repulsionY = (dy / d) * f;
                         }
                     }
-                } else {
+                    }
+                } else if (!isRowInROI) {
+                    // Si el barco no está en el área, saltamos también los buffers de ShoreWave
+                    // a menos que estemos en la orilla superior
+                    if (!isTopShore && this.isSleeping) {
+                        const mX = (c - shift) & patternMask;
+                        const mY = (r - shift) & patternMask;
+                        const patternVal = matrix[mY * patternSize + mX];
+                        const char = recentText[(c + r * numCols) % textLen] || ' ';
+                        const atlasX = ASCII_ATLAS.charMap.get(char) ?? 0;
+                        const atlasY = (patternVal === 1) ? charSize.h : 0;
+                        ctx.drawImage(ASCII_ATLAS.canvas, atlasX, atlasY, charSize.w, charSize.h, homeX, homeY, charSize.w, charSize.h);
+                        continue;
+                    }
+                    
                     const waveT = (1.6 + noiseT) * charSize.h + waterLineFull;
                     const waveB = canvas.height - (1.6 + noiseB) * charSize.h;
                     if (homeY < waveT || homeY > waveB) {

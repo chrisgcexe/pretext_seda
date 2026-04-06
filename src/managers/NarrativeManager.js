@@ -113,7 +113,7 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
 
             const spanEstatica = document.createElement('span');
             spanEstatica.className = 'static-part';
-            spanEstatica.innerText = parteEstatica;
+            spanEstatica.innerHTML = `<span id="target-o" style="display: inline-block; width: 1ch; text-align: left; transform-origin: center center; transition: transform 0.1s;">${parteEstatica.charAt(0)}</span>${parteEstatica.substring(1)}`;
             spanEstatica.style.color = '#0d0900';
 
             p.appendChild(spanSeda);
