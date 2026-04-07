@@ -26,12 +26,27 @@ import {
     inyectarParrafo
 } from './src/managers/NarrativeManager.js';
 
+import { SilkBridge } from './src/systems/SilkBridge.js';
+
+let activeBridges = [];
+
+// --- ESTADO FÍSICO (v6.6): PÁRRAFOS ELÁSTICOS ---
+let lastScrollY = window.scrollY;
+let p1VerticalVelocity = 0;
+let p1VerticalOffset = 0;
+const P1_STIFFNESS = 0.04; 
+const P1_DAMPING = 0.85; // ESTABILIZACIÓN MÁS RÁPIDA (v6.15)
+const P1_OFFSET_LIMIT = 50; // RANGO MÁS SUTIL (v6.15)
+
 /**
  * ENGINE LOOP
  */
 function setupScrollEngine() {
     function update() {
         const vH = window.innerHeight;
+        const currentScrollY = window.scrollY;
+        const scrollDelta = currentScrollY - lastScrollY;
+        lastScrollY = currentScrollY;
 
         // 1. Océanos
         activeOceans.forEach(ocean => {
@@ -80,9 +95,9 @@ function setupScrollEngine() {
 
                 // --- HITBOXES DE PRECISIÓN (v5.4) ---
                 // El hilo cae en el vacío pero choca con el texto restante.
+                let allRects = [];
                 if (silkCoreP0.isRepaired) {
                     const obstacles = document.querySelectorAll('.normal-text');
-                    let allRects = [];
                     
                     obstacles.forEach(el => {
                         if (el.classList.contains('p-initial-fray')) {
@@ -120,8 +135,81 @@ function setupScrollEngine() {
                 const newProg = currentFrayProgress + (targetFrayProgress - currentFrayProgress) * FRAY_LERP_FACTOR;
                 updateCurrentFrayProgress(newProg);
                 silkCoreP0.update(newProg, finalDX, finalDY);
+
+                // --- MECÁNICA DE HILOS DE CONEXIÓN (v6.0) ---
+                // Si el hilo inicial se reparó, extendemos el puente al siguiente párrafo.
+                if (silkCoreP0.isRepaired) {
+                    const repairAge = Date.now() - silkCoreP0.repairStartTime;
+                    
+                    // Esperamos a que el párrafo termine de subir (1.1s) para que el puente nazca con calma
+                    if (repairAge > 1100 && activeBridges.length === 0) {
+                        const p1 = document.getElementById('parrafo-1');
+                        if (p1) {
+                            const bridge = new SilkBridge(pInitial, p1, document.getElementById('libro'));
+                            activeBridges.push(bridge);
+                            console.log("SEDA: Puente de conexión (v6.0) establecido.");
+                        }
+                    }
+                }
+
+                // --- MECÁNICA DE PÁRRAFOS ELÁSTICOS (v6.12: ZONA DE SILENCIO) ---
+                const p1 = document.getElementById('parrafo-1');
+                if (p1 && silkCoreP0.isRepaired) {
+                    const p1Rect = p1.getBoundingClientRect();
+                    const p1Center = p1Rect.top + p1Rect.height / 2;
+                    
+                    // Zonas de Disparo Precisas (v6.16)
+                    const isEntering = p1Rect.top > vH * 0.7; // Solo Disparador de Entrada (Fondo)
+                    
+                    if (isEntering) {
+                        // REBOTE ACTIVO (Solo Entrada)
+                        p1VerticalVelocity += scrollDelta * 0.3; // IMPULSO MÁS FINO (v6.15)
+                        
+                        // Resolución de Muelle (Ley de Hooke)
+                        const springForce = -p1VerticalOffset * P1_STIFFNESS;
+                        p1VerticalVelocity += springForce;
+                        p1VerticalVelocity *= P1_DAMPING;
+                        p1VerticalOffset += p1VerticalVelocity;
+                        
+                        // Límite de seguridad
+                        p1VerticalOffset = Math.max(-P1_OFFSET_LIMIT, Math.min(P1_OFFSET_LIMIT, p1VerticalOffset));
+                    } else {
+                        // ZONA DE LECTURA ESTABLE (Centro)
+                        // Apagado suave de la física para evitar micro-rebotes
+                        p1VerticalVelocity *= 0.6;
+                        p1VerticalOffset *= 0.6;
+                        // Si el offset es mínimo, lo matamos a cero para quietud absoluta
+                        if (Math.abs(p1VerticalOffset) < 0.1) {
+                            p1VerticalOffset = 0;
+                            p1VerticalVelocity = 0;
+                        }
+                    }
+
+                    // Aplicación visual (v6.6)
+                    p1.style.transform = `translateY(${p1VerticalOffset.toFixed(2)}px)`;
+                }
+
+                // Actualizamos todos los puentes activos
+                activeBridges.forEach(bridge => {
+                    // v6.9: Excluimos el propio párrafo destino para que el hilo entre limpio "por arriba"
+                    const filteredRects = allRects.filter(r => {
+                        // Si el rect pertenece al párrafo destino (p1), lo ignoramos para el puente
+                        const p1Rect = p1.getBoundingClientRect();
+                        return !(Math.abs(r.top - (p1Rect.top - 5)) < 1 && Math.abs(r.left - p1Rect.left) < 1);
+                    });
+
+                    if (typeof allRects !== 'undefined' ) {
+                        bridge.setCollisionRects(filteredRects);
+                    }
+                    // Comunicamos el desplazamiento al puente para efectos visuales (v6.12)
+                    if (typeof bridge.setStress === 'function') {
+                        bridge.setStress(p1VerticalOffset);
+                    }
+                    bridge.update();
+                });
             } else if (silkCoreP0.isRepaired) {
-                silkCoreP0.ctx.clearRect(0, 0, silkCoreP0.canvas.width, silkCoreP0.canvas.height);
+                // Si el párrafo inicial sale de pantalla, aún debemos actualizar los puentes vinculados.
+                activeBridges.forEach(bridge => bridge.update());
             }
         }
 
