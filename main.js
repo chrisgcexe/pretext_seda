@@ -78,6 +78,42 @@ function setupScrollEngine() {
                     setTransitionLocked(false);
                 }
 
+                // --- HITBOXES DE PRECISIÓN (v5.4) ---
+                // El hilo cae en el vacío pero choca con el texto restante.
+                if (silkCoreP0.isRepaired) {
+                    const obstacles = document.querySelectorAll('.normal-text');
+                    let allRects = [];
+                    
+                    obstacles.forEach(el => {
+                        if (el.classList.contains('p-initial-fray')) {
+                            const staticPart = el.querySelector('.static-part');
+                            if (staticPart) {
+                                const rects = Array.from(staticPart.getClientRects());
+                                if (rects.length > 0) {
+                                    // BLOQUE 1: La primera línea (el Notch)
+                                    const r1 = rects[0];
+                                    allRects.push({ top: r1.top - 5, bottom: r1.bottom, left: r1.left, right: r1.right });
+
+                                    // BLOQUE 2: Todo el resto del párrafo unificado (v5.9)
+                                    if (rects.length > 1) {
+                                        const lastRects = rects.slice(1);
+                                        const bodyTop = lastRects[0].top;
+                                        const bodyBottom = lastRects[lastRects.length - 1].bottom;
+                                        const bodyLeft = Math.min(...lastRects.map(r => r.left));
+                                        const bodyRight = Math.max(...lastRects.map(r => r.right));
+                                        allRects.push({ top: bodyTop - 5, bottom: bodyBottom, left: bodyLeft, right: bodyRight });
+                                    }
+                                }
+                            }
+                        } else {
+                            const r = el.getBoundingClientRect();
+                            allRects.push({ top: r.top - 5, bottom: r.bottom, left: r.left, right: r.right });
+                        }
+                    });
+                    
+                    silkCoreP0.setCollisionRects(allRects);
+                }
+
                 const finalDX = window.innerWidth * 0.05;
                 const finalDY = window.innerHeight * 0.15;
 

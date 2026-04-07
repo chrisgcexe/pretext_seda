@@ -42,7 +42,10 @@ export class SilkCanvas {
         // --- OPTIMIZACIÓN PERFORMANCE ARMOR (v3.5) ---
         this.isSleeping = false;
         this.framesInactive = 0;
-        this.lastScrollY = window.scrollY; // Inicialización redundante para seguridad
+        this.lastScrollY = window.scrollY; 
+        
+        // --- HITBOXES FÍSICAS (v5.0) ---
+        this.collisionRects = [];
         
         this.setupInteraction();
     }
@@ -137,6 +140,47 @@ export class SilkCanvas {
     wakeUp() {
         this.isSleeping = false;
         this.framesInactive = 0;
+    }
+
+    // --- HITBOXES (v5.0) ---
+    // Recibe los rectángulos de colisión desde el DOM centralizado
+    setCollisionRects(rects) {
+        this.collisionRects = rects;
+    }
+
+    // Motor de Colisiones de Alta Frecuencia (v5.9)
+    resolveCollisions(nodes) {
+        if (!this.collisionRects || this.collisionRects.length === 0) return;
+        const scrollDelta = this.isRepaired ? (this.repairScrollY - window.scrollY) : 0;
+
+        const limit = nodes.length;
+        for (let i = 1; i < limit - 1; i++) { 
+            const n = nodes[i];
+            const renderX = n.x;
+            const renderY = n.y + scrollDelta;
+
+            for (const rect of this.collisionRects) {
+                if (renderX > rect.left && renderX < rect.right &&
+                    renderY > rect.top && renderY < rect.bottom) {
+                    
+                    const dTop = Math.abs(renderY - rect.top);
+                    const dBot = Math.abs(renderY - rect.bottom);
+                    const dLeft = Math.abs(renderX - rect.left);
+                    const dRight = Math.abs(renderX - rect.right);
+                    const minDist = Math.min(dTop, dBot, dLeft, dRight);
+
+                    if (minDist === dTop) {
+                        n.y = rect.top - scrollDelta;
+                    }
+                    else if (minDist === dBot) n.y = rect.bottom - scrollDelta;
+                    else if (minDist === dLeft) n.x = rect.left;
+                    else if (minDist === dRight) n.x = rect.right;
+                    
+                    // Sincronizamos la inercia (Soft-Kill vertical)
+                    n.oldY = n.y - (n.y - n.oldY) * 0.1; 
+                }
+            }
+        }
     }
 
     setup() {
@@ -538,9 +582,9 @@ export class SilkCanvas {
             this.anchorNodes[this.nodeCount - 1].y = yEnd;
         }
 
-        // Integración Verlet con INERCIA REACTIVA
+        // Integración Verlet con INERCIA REACTIVA (v5.2)
         const limit = isPinnedEnd ? this.nodeCount - 1 : this.nodeCount;
-        const scrollImpact = this.isRepaired ? this.scrollVelocity * 0.42 : 0;
+        const scrollImpact = this.isRepaired ? this.scrollVelocity * 0.35 : 0; 
 
         for (let i = 1; i < limit; i++) {
             const n = this.anchorNodes[i];
@@ -550,7 +594,7 @@ export class SilkCanvas {
             n.oldY = n.y;
             
             n.x += vx;
-            n.y += vy + gravity - scrollImpact; 
+            n.y += vy + gravity - scrollImpact; // La inercia del scroll vuelve a la vida
 
             // Micro-vibración orgánica
             if (this.isRepaired) {
@@ -558,6 +602,9 @@ export class SilkCanvas {
                 n.y += (Math.random() - 0.5) * 0.1;
             }
         }
+
+        // --- SISTEMA DE HITBOXES (v5.6): Ahora dentro del motor de iteración ---
+        // Movido adentro del bucle de constraints para máxima estabilidad.
 
         // CATENARIA DINÁMICA: CONSECUENCIA FÍSICA (CAUSA -> EFECTO)
         let targetLen = 135; 
@@ -594,6 +641,12 @@ export class SilkCanvas {
                 if (i + 1 !== this.nodeCount - 1 || !isPinnedEnd) { 
                     p2.x += offsetX; p2.y += offsetY; 
                 }
+            }
+
+            // --- RESOLUCIÓN ITERATIVA DE ALTA FRECUENCIA (v5.9) ---
+            // Restaurado adentro del bucle para máxima solidez física.
+            if (this.isRepaired) {
+                this.resolveCollisions(this.anchorNodes);
             }
         }
 
