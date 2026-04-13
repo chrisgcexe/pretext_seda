@@ -16,47 +16,66 @@ export let activeTransitions = [];
 
 export let isTransitionLocked = false;
 export let frayTransitionStarted = false;
-export let targetFrayProgress = 0.003;   // TENSIÓN SUTIL: 0.3% inicial
-export let currentFrayProgress = 0.003;
-export const FRAY_SCROLL_SENSITIVITY = 0.00025;
-export const FRAY_LERP_FACTOR = 0.06;  
+export let targetFrayProgress = 0.0;   // Inicia en reposo absoluto
+export let currentFrayProgress = 0.0;
+export const FRAY_SCROLL_SENSITIVITY = 0.00018; // De 0.00025 a 0.00018 para dar más tiempo de lectura/observación
+export const FRAY_LERP_FACTOR = 0.15; // De 0.06 a 0.15 para eliminar el delay percibido en el seguimiento del scroll
 
 export let silkCoreP0 = null;
+let pendingP0 = null; // Buffer para el primer párrafo secuencial
+
+export let minScrollAllowed = 0;
+export function setMinScrollAllowed(val) { minScrollAllowed = val; }
 
 // --- FUNCIONES CORE ---
 
 export function setTransitionLocked(val) { isTransitionLocked = val; }
 export function setFrayTransitionStarted(val) { frayTransitionStarted = val; }
+
+// v8.2: Límite dinámico del progreso — 0.9 para fase P0, 1.01 para fase P1
+export let frayMaxProgress = 0.9;
+export let frayMinProgress = 0.0; // Milestone lock (Sticky Progress)
+export function setFrayMaxProgress(val) { frayMaxProgress = val; }
+export function setFrayMinProgress(val) { frayMinProgress = val; }
+
 export function updateTargetFrayProgress(delta) { 
     targetFrayProgress += delta;
-    targetFrayProgress = Math.max(0, Math.min(1.01, targetFrayProgress));
+    // Clamping dinámico basado en hitos alcanzados
+    targetFrayProgress = Math.max(frayMinProgress, Math.min(frayMaxProgress, targetFrayProgress));
 }
 export function updateCurrentFrayProgress(val) { currentFrayProgress = val; }
 
+export let frayInputEnabled = true;
+export function setFrayInputEnabled(val) { frayInputEnabled = val; }
+
 export function lockScroll(e) {
+    if (minScrollAllowed > 0 && window.scrollY < minScrollAllowed) {
+        window.scrollTo(0, minScrollAllowed);
+        e.preventDefault();
+        return false;
+    }
+
     if (isTransitionLocked) {
         e.preventDefault();
 
-        // 1. EL ENCIERRO: Si el hilo se cortó y está colgando, el usuario está atrapado.
-        // Ignoramos la rueda del mouse por completo. La única salida es coserlo a mano.
+        // Si estamos en una transición cinemática (auto-scroll/wait), bloqueamos el input
+        if (!frayInputEnabled) return false;
+
+        // ENCIERRO: hilo roto, esperando costura manual.
         if (silkCoreP0 && silkCoreP0.isBroken && !silkCoreP0.isRepaired) {
             return false;
         }
 
-        // 2. TENSIÓN: Aplicamos la sensibilidad del scroll
-        updateTargetFrayProgress(e.deltaY * FRAY_SCROLL_SENSITIVITY);
-
-        // 3. LOS LÍMITES
-        if (targetFrayProgress >= 1) {
-            // MURO DE TENSIÓN: Ya no hay temporizador. 
-            // Sostenemos la tensión al 100% obligando al Lerp visual a alcanzar el 0.99 para que haga SNAP.
-        } else if (targetFrayProgress <= 0) {
-            // ABORTO NATURAL: El usuario se arrepintió, scrolleó todo hacia arriba y soltó la tensión.
-            isTransitionLocked = false;
-            setFrayTransitionStarted(false);
+        // BLOQUEO DE REGENERACIÓN (One-Way):
+        // Si ya estamos terminando el párrafo (P1 reparado y > 1.90 de progreso),
+        // prohibimos el scroll inverso para que no se regenere el texto ya consumido.
+        const delta = e.deltaY * FRAY_SCROLL_SENSITIVITY;
+        if (silkCoreP0 && silkCoreP0.isRepaired && targetFrayProgress > 1.90 && delta < 0) {
+            return false;
         }
-        
-        return false;
+
+        // TENSIÓN: el scroll avanza el deshilachado de P0.
+        updateTargetFrayProgress(delta);
     }
 }
 
@@ -98,8 +117,23 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
         p.classList.add('normal-text');
 
         if (index === 0) {
+            // PÁRRAFO 0: 100% SEDA (v7.0)
             p.classList.add('p-initial-fray');
-            const limitJ = textoParrafo.indexOf('J') + 1; 
+            const spanSeda = document.createElement('span');
+            spanSeda.className = 'silk-part';
+            // Guardamos la referencia para cuando llegue P1
+            pendingP0 = { el: p, span: spanSeda, text: textoParrafo };
+            
+            p.appendChild(spanSeda);
+            contenedorPadre.appendChild(p);
+            return p;
+        } 
+        
+        if (index === 1 && pendingP0) {
+            // PÁRRAFO 1: PUNTO DE CORTE (v7.0)
+            p.classList.add('p-initial-fray');
+            
+            const limitJ = textoParrafo.lastIndexOf('J') + 1; 
             const parteSeda = textoParrafo.substring(0, limitJ);
             const parteEstatica = textoParrafo.substring(limitJ);
 
@@ -113,20 +147,34 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
 
             p.appendChild(spanSeda);
             p.appendChild(spanEstatica);
+            contenedorPadre.appendChild(p);
 
-            silkCoreP0 = new SilkCanvas(parteSeda, "", spanSeda, parteSeda.length - 1);
+            // INICIALIZACIÓN COMBINADA: El hilo atraviesa P0 y el inicio de P1
+            const fullSilkText = pendingP0.text + " " + (index === 1 ? parteSeda : "") + parteEstatica;
+            const elements = [
+                { el: pendingP0.span, text: pendingP0.text + " " },
+                { el: spanSeda, text: parteSeda },
+                { el: spanEstatica, text: parteEstatica }
+            ];
+
+            silkCoreP0 = new SilkCanvas(elements, fullSilkText, (pendingP0.text + " " + parteSeda).length - 1);
             silkCoreP0.hangingTarget = spanEstatica;
-        } else {
-            p.innerText = textoParrafo;
+            
+            pendingP0 = null; // Limpiamos buffer
+            return p;
         }
 
-        if (/H[eé]l[eé]ne/i.test(textoParrafo) && textoParrafo.includes("mujer")) p.dataset.trigger = "helene";
+        // Párrafos normales
+        p.innerText = textoParrafo;
+
+        if (/H[eé]l[eé]ne/i.test(textoParrafo) && (textoParrafo.includes("mujer") || textoParrafo.includes("esposa"))) p.dataset.trigger = "helene";
         if (/ojos/i.test(textoParrafo) && /oriental/i.test(textoParrafo)) p.dataset.trigger = "japanese_woman";
 
         contenedorPadre.appendChild(p);
         return p;
     }
 
+    // --- LÓGICA DE OCÉANO (info.tipo === 'agua') ---
     const viewW = window.innerWidth;
     const isMobile = viewW < 768;
     const PADDING = isMobile ? Math.floor(viewW * 0.08) : 120;
@@ -218,4 +266,5 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
     ocean.parentTrack.id = `parrafo-${index}`;
     ocean.parentTrack.setAttribute('data-index', index);
     activeOceans.push(ocean);
+    return track;
 }

@@ -150,6 +150,7 @@ canvas.hilo-narrativo {
     pointer-events: none;
     z-index: 20;
     background: transparent;
+    transition: opacity 0.7s ease;
 }
 
 .p-initial-fray {

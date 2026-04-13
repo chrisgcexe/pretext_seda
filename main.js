@@ -9,34 +9,43 @@ import './src/utils/pretext.js'; // Carga window.Pretext
 if ('scrollRestoration' in history) {
     history.scrollRestoration = 'manual';
 }
+
 import { 
     activeOceans, 
     activeTransitions, 
     textoLeido, 
     isTransitionLocked, 
-    frayTransitionStarted, 
     targetFrayProgress, 
     currentFrayProgress, 
     silkCoreP0,
     FRAY_LERP_FACTOR,
     setTransitionLocked,
     setFrayTransitionStarted,
+    setFrayMaxProgress,
+    setFrayMinProgress,
+    setFrayInputEnabled,
     updateCurrentFrayProgress,
+    updateTargetFrayProgress,
     lockScroll,
-    inyectarParrafo
+    inyectarParrafo,
+    minScrollAllowed,
+    setMinScrollAllowed
 } from './src/managers/NarrativeManager.js';
 
-import { SilkBridge } from './src/systems/SilkBridge.js';
 
-let activeBridges = [];
+// --- STATE MACHINE (v8.3) ---
+// Fases: 'P0_FRAY' → 'SCROLL_TO_P1' → 'WAIT_P1' → 'P1_FRAY' → 'BROKEN' → 'DONE'
+let frayPhase = 'P0_FRAY';
 
-// --- ESTADO FÍSICO (v6.6): PÁRRAFOS ELÁSTICOS ---
 let lastScrollY = window.scrollY;
-let p1VerticalVelocity = 0;
-let p1VerticalOffset = 0;
-const P1_STIFFNESS = 0.04; 
-const P1_DAMPING = 0.85; // ESTABILIZACIÓN MÁS RÁPIDA (v6.15)
-const P1_OFFSET_LIMIT = 50; // RANGO MÁS SUTIL (v6.15)
+
+// Auto-scroll state
+let autoScrollFrom  = 0;    // scrollY inicial del auto-scroll
+let autoScrollTo    = 0;    // scrollY objetivo (P1 centrado)
+let autoScrollT0    = 0;    // timestamp de inicio
+const AUTO_SCROLL_MS = 950;  // De 1400 a 950 para más dinamismo
+const WAIT_P1_MS     = 1000; // De 2000 a 1000 para reducir el bloqueo percibido en el segundo párrafo
+let waitP1T0         = 0;    // timestamp de inicio del wait
 
 /**
  * ENGINE LOOP
@@ -77,140 +86,156 @@ function setupScrollEngine() {
         });
         activeTransitions.forEach(trans => trans.render(trans === primaryTrans));
 
-        // 3. SilkCanvas (Párrafo 1)
+        // 3. SilkCanvas — State Machine v8.2
+        const p1 = document.getElementById('parrafo-1');
         const pInitial = document.querySelector('.p-initial-fray');
-        if (pInitial && silkCoreP0) {
-            const rect = pInitial.getBoundingClientRect();
-            if (rect.top < vH && rect.bottom > -vH) {
-                // FIX 4: Solo bloqueamos la transición si NO está reparada
-                if (!frayTransitionStarted && rect.top < vH * 0.4 && rect.top > 0 && !silkCoreP0.isRepaired) {
-                    setTransitionLocked(true);
-                    setFrayTransitionStarted(true);
-                }
+        if (pInitial && silkCoreP0 && p1) {
 
-                // NUEVO FIX: Desbloqueo INMEDIATO apenas se cose el hilo. Cero lag.
-                if (silkCoreP0.isRepaired && isTransitionLocked) {
-                    setTransitionLocked(false);
-                }
+            const finalDX = window.innerWidth * 0.05;
+            const finalDY = window.innerHeight * 0.15;
 
-                // --- HITBOXES DE PRECISIÓN (v5.4) ---
-                // El hilo cae en el vacío pero choca con el texto restante.
-                let allRects = [];
-                if (silkCoreP0.isRepaired) {
-                    const obstacles = document.querySelectorAll('.normal-text');
-                    
-                    obstacles.forEach(el => {
-                        if (el.classList.contains('p-initial-fray')) {
-                            const staticPart = el.querySelector('.static-part');
-                            if (staticPart) {
-                                const rects = Array.from(staticPart.getClientRects());
-                                if (rects.length > 0) {
-                                    // BLOQUE 1: La primera línea (el Notch)
-                                    const r1 = rects[0];
-                                    allRects.push({ top: r1.top - 5, bottom: r1.bottom, left: r1.left, right: r1.right });
-
-                                    // BLOQUE 2: Todo el resto del párrafo unificado (v5.9)
-                                    if (rects.length > 1) {
-                                        const lastRects = rects.slice(1);
-                                        const bodyTop = lastRects[0].top;
-                                        const bodyBottom = lastRects[lastRects.length - 1].bottom;
-                                        const bodyLeft = Math.min(...lastRects.map(r => r.left));
-                                        const bodyRight = Math.max(...lastRects.map(r => r.right));
-                                        allRects.push({ top: bodyTop - 5, bottom: bodyBottom, left: bodyLeft, right: bodyRight });
-                                    }
-                                }
-                            }
-                        } else {
-                            const r = el.getBoundingClientRect();
-                            allRects.push({ top: r.top - 5, bottom: r.bottom, left: r.left, right: r.right });
+            // --- SISTEMA DE COLISIONES GHOST SHIP (v12.5) ---
+            // Actualizamos siempre los rectángulos para que la seda reaccione al entorno móvil.
+            const allRects = [];
+            document.querySelectorAll('.normal-text').forEach(el => {
+                // El OBJETIVO de la amnistía es el párrafo al que queremos conectar (P1)
+                const isTarget = (el === p1); 
+                
+                const staticPart = el.querySelector('.static-part');
+                if (staticPart) {
+                    const rects = Array.from(staticPart.getClientRects());
+                    if (rects.length > 0) {
+                        const r1 = rects[0];
+                        allRects.push({ 
+                            top: r1.top - 5, 
+                            bottom: r1.bottom, 
+                            left: r1.left, 
+                            right: r1.right,
+                            isTarget: isTarget 
+                        });
+                        if (rects.length > 1) {
+                            const last = rects.slice(1);
+                            allRects.push({
+                                top: last[0].top - 5,
+                                bottom: last[last.length - 1].bottom,
+                                left: Math.min(...last.map(r => r.left)),
+                                right: Math.max(...last.map(r => r.right)),
+                                isTarget: isTarget
+                            });
                         }
+                    }
+                } else {
+                    const r = el.getBoundingClientRect();
+                    allRects.push({ 
+                        top: r.top - 5, 
+                        bottom: r.bottom, 
+                        left: r.left, 
+                        right: r.right,
+                        isTarget: isTarget 
                     });
-                    
-                    silkCoreP0.setCollisionRects(allRects);
                 }
+            });
+            silkCoreP0.setCollisionRects(allRects);
 
-                const finalDX = window.innerWidth * 0.05;
-                const finalDY = window.innerHeight * 0.15;
+            // ============================================================
+            // STATE MACHINE v8.3
+            // ============================================================
 
-                const newProg = currentFrayProgress + (targetFrayProgress - currentFrayProgress) * FRAY_LERP_FACTOR;
-                updateCurrentFrayProgress(newProg);
-                silkCoreP0.update(newProg, finalDX, finalDY);
+            if (frayPhase === 'P0_FRAY') {
+                // Scroll bloqueado. El deltaY deshilacha P0 (progress 0 → 0.9).
+                if (currentFrayProgress >= 0.899) {
+                    // P0 terminado PERFECTAMENTE: forzamos el progreso a 0.9 para detonar 
+                    // el Handover Cinematográfico del hilo antes de mover la cámara.
+                    updateTargetFrayProgress(0.9 - targetFrayProgress);
+                    updateCurrentFrayProgress(0.9);
 
-                // --- MECÁNICA DE HILOS DE CONEXIÓN (v6.0) ---
-                // Si el hilo inicial se reparó, extendemos el puente al siguiente párrafo.
-                if (silkCoreP0.isRepaired) {
-                    const repairAge = Date.now() - silkCoreP0.repairStartTime;
+                    // Calculamos el target para centrar P1
+                    const rectP1now = p1.getBoundingClientRect();
+                    autoScrollFrom = window.scrollY;
+                    autoScrollTo   = window.scrollY + rectP1now.top + rectP1now.height / 2 - vH / 2;
+                    autoScrollT0   = Date.now();
                     
-                    // Esperamos a que el párrafo termine de subir (1.1s) para que el puente nazca con calma
-                    if (repairAge > 1100 && activeBridges.length === 0) {
-                        const p1 = document.getElementById('parrafo-1');
-                        if (p1) {
-                            const bridge = new SilkBridge(pInitial, p1, document.getElementById('libro'));
-                            activeBridges.push(bridge);
-                            console.log("SEDA: Puente de conexión (v6.0) establecido.");
-                        }
-                    }
+                    frayPhase = 'SCROLL_TO_P1';
+                    setFrayMaxProgress(1.01); 
+                    setFrayMinProgress(0.9); // SELLAMOS P0: No se puede des-deshilachar el primer párrafo
+                    setFrayInputEnabled(false); 
+                    console.log('SEDA: P0 done → Handover ejecutado → SCROLL_TO_P1', autoScrollTo);
                 }
-
-                // --- MECÁNICA DE PÁRRAFOS ELÁSTICOS (v6.12: ZONA DE SILENCIO) ---
-                const p1 = document.getElementById('parrafo-1');
-                if (p1 && silkCoreP0.isRepaired) {
-                    const p1Rect = p1.getBoundingClientRect();
-                    const p1Center = p1Rect.top + p1Rect.height / 2;
-                    
-                    // Zonas de Disparo Precisas (v6.16)
-                    const isEntering = p1Rect.top > vH * 0.7; // Solo Disparador de Entrada (Fondo)
-                    
-                    if (isEntering) {
-                        // REBOTE ACTIVO (Solo Entrada)
-                        p1VerticalVelocity += scrollDelta * 0.3; // IMPULSO MÁS FINO (v6.15)
-                        
-                        // Resolución de Muelle (Ley de Hooke)
-                        const springForce = -p1VerticalOffset * P1_STIFFNESS;
-                        p1VerticalVelocity += springForce;
-                        p1VerticalVelocity *= P1_DAMPING;
-                        p1VerticalOffset += p1VerticalVelocity;
-                        
-                        // Límite de seguridad
-                        p1VerticalOffset = Math.max(-P1_OFFSET_LIMIT, Math.min(P1_OFFSET_LIMIT, p1VerticalOffset));
-                    } else {
-                        // ZONA DE LECTURA ESTABLE (Centro)
-                        // Apagado suave de la física para evitar micro-rebotes
-                        p1VerticalVelocity *= 0.6;
-                        p1VerticalOffset *= 0.6;
-                        // Si el offset es mínimo, lo matamos a cero para quietud absoluta
-                        if (Math.abs(p1VerticalOffset) < 0.1) {
-                            p1VerticalOffset = 0;
-                            p1VerticalVelocity = 0;
-                        }
-                    }
-
-                    // Aplicación visual (v6.6)
-                    p1.style.transform = `translateY(${p1VerticalOffset.toFixed(2)}px)`;
-                }
-
-                // Actualizamos todos los puentes activos
-                activeBridges.forEach(bridge => {
-                    // v6.9: Excluimos el propio párrafo destino para que el hilo entre limpio "por arriba"
-                    const filteredRects = allRects.filter(r => {
-                        // Si el rect pertenece al párrafo destino (p1), lo ignoramos para el puente
-                        const p1Rect = p1.getBoundingClientRect();
-                        return !(Math.abs(r.top - (p1Rect.top - 5)) < 1 && Math.abs(r.left - p1Rect.left) < 1);
-                    });
-
-                    if (typeof allRects !== 'undefined' ) {
-                        bridge.setCollisionRects(filteredRects);
-                    }
-                    // Comunicamos el desplazamiento al puente para efectos visuales (v6.12)
-                    if (typeof bridge.setStress === 'function') {
-                        bridge.setStress(p1VerticalOffset);
-                    }
-                    bridge.update();
-                });
-            } else if (silkCoreP0.isRepaired) {
-                // Si el párrafo inicial sale de pantalla, aún debemos actualizar los puentes vinculados.
-                activeBridges.forEach(bridge => bridge.update());
             }
+
+            else if (frayPhase === 'SCROLL_TO_P1') {
+                // Scroll bloqueado. Animamos el scroll automáticamente hacia P1.
+                // El usuario no puede interferir (lock activo).
+                const elapsed = Date.now() - autoScrollT0;
+                const t = Math.min(1, elapsed / AUTO_SCROLL_MS);
+                // Ease in-out cúbico: suave inicio y suave frenado
+                const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+                window.scrollTo(0, autoScrollFrom + (autoScrollTo - autoScrollFrom) * ease);
+
+                if (t >= 1) {
+                    frayPhase = 'WAIT_P1';
+                    waitP1T0 = Date.now();
+                    console.log('SEDA: P1 centrado → WAIT_P1 (2s)');
+                }
+            }
+
+            else if (frayPhase === 'WAIT_P1') {
+                // Scroll bloqueado, P1 centrado, esperando 2s antes de habilitar fray.
+                if (Date.now() - waitP1T0 >= WAIT_P1_MS) {
+                    frayPhase = 'P1_FRAY';
+                    setFrayTransitionStarted(true);
+                    setFrayInputEnabled(true); // DEVOLVEMOS control al usuario
+                    console.log('SEDA: WAIT done → P1_FRAY');
+                }
+            }
+
+            else if (frayPhase === 'P1_FRAY') {
+                // Scroll bloqueado. El deltaY deshilacha P1 (progress 0.9 → 1.0).
+                if (silkCoreP0.isBroken) {
+                    frayPhase = 'BROKEN';
+                    // EVITAR TELETRANSPORTACIÓN (POPPING ASQUEROSO): 
+                    // Si el usuario siguió scrolleando fuerte durante o justo después del quiebre, 
+                    // la inercia del scroll deja el targetFrayProgress en 1.01. Al reconectar, 
+                    // el sistema asume que ya adelantó texto y lo teletransporta 30% del camino instantáneamente.
+                    // Anclar esto a 1.0 garantiza un frame estático inmaculado al momento de costura.
+                    updateTargetFrayProgress(1.0 - targetFrayProgress);
+                    updateCurrentFrayProgress(1.0);
+                    console.log('SEDA: P1 broken → BROKEN (J→O needed)');
+                }
+            }
+
+            else if (frayPhase === 'BROKEN') {
+                // Scroll bloqueado hasta que el usuario cose J con O.
+                 if (silkCoreP0.isRepaired) {
+                     frayPhase = 'POST_REPAIR_CONSUME';
+                     setFrayMaxProgress(2.0); 
+                     setFrayMinProgress(1.0); // SELLAMOS P1 pre-corte: No se puede volver al estado roto/fray1
+                     
+                     // La transparencia del texto ahora se maneja internamente en transitionToState(REPAIRED)
+                     console.log('SEDA: Repaired → POST_REPAIR_CONSUME');
+                 }
+            }
+
+            else if (frayPhase === 'POST_REPAIR_CONSUME') {
+                // El hilo deshilacha libremente el resto de P1
+                if (silkCoreP0.relayTriggered) {
+                    if (currentFrayProgress >= 1.99 && minScrollAllowed === 0) {
+                        setMinScrollAllowed(window.scrollY);
+                        setTransitionLocked(false); // AHORA liberamos el scroll real de la página
+                        console.log('SEDA: Hélene alcanzada y P1 consumido. Scroll blocked at', minScrollAllowed);
+                        frayPhase = 'DONE';
+                    }
+                }
+            }
+
+            // DONE: scroll libre, no hay nada que hacer
+
+            // ============================================================
+            // LERP + RENDER
+            // ============================================================
+            const newProg = currentFrayProgress + (targetFrayProgress - currentFrayProgress) * FRAY_LERP_FACTOR;
+            updateCurrentFrayProgress(newProg);
+            silkCoreP0.update(newProg, finalDX, finalDY);
         }
 
         requestAnimationFrame(update);
@@ -238,8 +263,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Doble seguro: Forzamos el viewport al inicio absoluto
     window.scrollTo(0, 0);
+
+    // FASE INICIAL: P0_FRAY — scroll bloqueado, progress limitado a 0.9 (solo P0)
+    setTransitionLocked(true);
+    setFrayMaxProgress(0.9);
 
     setupScrollEngine();
 
