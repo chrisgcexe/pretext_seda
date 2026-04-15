@@ -21,6 +21,7 @@ export class SilkCanvas {
         this.canvas = document.createElement('canvas');
         this.canvas.className = 'silk-overlay-canvas';
         this.ctx = this.canvas.getContext('2d');
+        this.canvas.style.transition = 'opacity 0.4s ease-in-out'; // v27.0: Smooth Hiding
         document.body.appendChild(this.canvas);
 
         this.chars = [];
@@ -53,6 +54,7 @@ export class SilkCanvas {
         // --- ESTADOS NARRATIVOS (RELEVO DE ANCLA) ---
         this.activeHUDChar = "J";
         this.relayTriggered = false;
+        this.oConsumed = false; // v31.2: Para ocultar la O al tocar la J
 
         // --- ESTADOS DE LA MECÁNICA (MAQUINA DE ESTADOS v9.0) ---
         this.STATE = {
@@ -159,6 +161,7 @@ export class SilkCanvas {
         switch (newState) {
             case this.STATE.BROKEN:
                 this.canvas.style.pointerEvents = 'auto';
+                this.oConsumed = false; // Reset al romper para permitir re-intento
                 if (oldState === this.STATE.INTACT) {
                     // EL QUIEBRE INICIAL
                     this.snapT = 15;
@@ -207,8 +210,8 @@ export class SilkCanvas {
                 const ty = data.targetY || (rect.top + rect.height / 2 + this.yOffset);
                 this.repairStartDist = Math.hypot(rect.left - tx, (rect.top + rect.height / 2 + this.yOffset) - ty);
 
-                // WHIP SNAP (v15.0): Impulso masivo inicial a los nodos para que el hilo "censure" al instante.
-                const whipStrength = 25;
+                // WHIP SNAP (v15.0): Impulso para que el hilo se recoja al conectar.
+                const whipStrength = 15;
                 this.anchorNodes.forEach((n, i) => {
                     if (i > 0 && i < this.nodeCount - 1) {
                         const dx = tx - n.x;
@@ -374,6 +377,9 @@ export class SilkCanvas {
             }
         }
 
+        this.enrollmentProgress = 0; // v23.0 - Metáfora del ovillo (Enrollment)
+        this.enrollmentStarted = false;
+        
         this.isInitialized = true;
 
         // IDENTIFICACIÓN DE HITOS (v10.0): Para hilos guía y vínculos
@@ -409,8 +415,23 @@ export class SilkCanvas {
         this.ctx.scale(dpr, dpr);
     }
 
-    update(progress, targetX, targetY) {
+    update(progress, targetX, targetY, rect = null) {
         if (!this.isInitialized) { this.setup(); if (!this.isInitialized) return; }
+
+        // v25.0: Proactive Enrollment (Auto-Ovillo Off-Screen)
+        // Solo adelantamos si TODO el sistema (P0 y P1) está fuera de vista.
+        const isBlockInView = this.elements.some(entry => {
+            const r = entry.el.getBoundingClientRect();
+            return (r.bottom > -400 && r.top < window.innerHeight + 400);
+        });
+
+        if (!isBlockInView) {
+            if (this.state === this.STATE.DONE || (this.isRepaired && progress > 1.9)) {
+                this.enrollmentProgress = 1.0;
+                this.enrollmentStarted = true;
+            }
+        }
+
         if (!this.hasResized) { this.resize(); this.hasResized = true; }
 
         // Calculamos velocidad de scroll SIEMPRE para mantener el delta correcto
@@ -445,7 +466,9 @@ export class SilkCanvas {
                 const rect = entry.el.getBoundingClientRect();
                 return (rect.bottom > -200 && rect.top < window.innerHeight + 200);
             });
-            if (!isInView) return; 
+            // v25.0: Si no está en vista PERO el ovillo está empezando o terminado, NO retornamos
+            // para permitir que el ancla del HUD siga renderizándose.
+            if (!isInView && !this.enrollmentStarted && this.state !== this.STATE.DONE) return; 
         }
 
         // --- BLOQUEO DE ESTADO FINAL (LOCK) ---
@@ -484,22 +507,22 @@ export class SilkCanvas {
         } else if (this.isRepaired) {
             const age = Date.now() - this.repairStartTime;
             if (age < 350) {
-                // ETAPA 1: TENSIÓN — leve vibración orgánica
+                // ETAPA 1: TENSIÓN — leve vibración orgánica antes del ascenso
                 this.targetYOffset = this.lastDropDist; 
                 currentSpring = 0.01;
-                currentDamping = 0.55;
-                // Jitter suave de tensión (más orgánico, sin violencia)
-                this.yVelocity += (Math.random() - 0.5) * 2.0; 
+                currentDamping = 0.90; // Amortiguamiento para limpiar la inercia del arrastre
+                // Jitter orgánico de tensión
+                this.yVelocity += (Math.random() - 0.5) * 1.2; 
             } else {
-                // ETAPA 2: ASCENSO SUAVE — como una tela que se recoge
+                // ETAPA 2: ASCENSO MUCHO MÁS SUTIL — aterrizaje de "gravedad cero"
                 if (!this.liftStarted) {
                     this.targetYOffset = this.finalLiftedDist;
-                    this.yVelocity = -9;  // Impulso moderado, sin lanzamiento brusco
+                    this.yVelocity = -1.2;  // Impulso mínimo, casi imperceptible
                     this.targetAngle = 0;
                     this.liftStarted = true;
                 }
-                currentSpring = 0.10; // Más suave — menos resistencia
-                currentDamping = 0.92; // Más amortiguación — menos rebote
+                currentSpring = 0.035; // Muelle muy suave para un retorno lento
+                currentDamping = 0.88; // Mucha fricción para que el rebote sea apenas un suspiro
             }
         }
 
@@ -548,6 +571,17 @@ export class SilkCanvas {
         // y forzamos que todas las letras estén consumidas permanentemente.
         if (this.state === this.STATE.DONE) {
             scaledProgress = this.totalChars;
+            // v23.0: Iniciamos la metáfora del ovillo
+            if (!this.enrollmentStarted) {
+                this.enrollmentStarted = true;
+            }
+            if (this.enrollmentProgress < 1.0) {
+                this.enrollmentProgress += 0.02; // Velocidad de enrollado más fluida para evitar sensación de lag/bug
+                if (this.enrollmentProgress >= 1.0) {
+                    this.enrollmentProgress = 1.0;
+                    this.snapT = 0; // Sin jitter final para evitar rebote brusco
+                }
+            }
         }
         
         const currentIdx = Math.floor(scaledProgress);
@@ -625,10 +659,11 @@ export class SilkCanvas {
             let targetYNodes = mainAnchor.curY;
             
             const isEndOfP0 = (currentIdx >= this.totalChars - 1.5);
-            if (isEndOfP0) {
-                // El hilo "cuelga" 60px por debajo del ancla final (dX, dY)
+            if (isEndOfP0 || this.state === this.STATE.DONE) {
+                // v23.0: Metáfora del ovillo - El punto final se repliega hacia el ancla (dX, dY)
+                const hangLength = 60 * (1 - this.enrollmentProgress);
                 targetXNodes = dX;
-                targetYNodes = dY + 60;
+                targetYNodes = dY + hangLength;
             } else if (isHandoverPhase && this.p0LastCharIdx !== -1 && this.chars[this.p0LastCharIdx]) {
                 const endChar = this.chars[this.p0LastCharIdx];
                 targetXNodes = endChar.curX;
@@ -891,10 +926,18 @@ export class SilkCanvas {
             const oChar = this.chars[this.snapCharIdx];
             this.snapTargetX = oChar.curX;
             this.snapTargetY = oChar.curY;
+
+            // v31.2: Detección de colisión "O" con "J" (el margen dX, dY)
+            if (this.isRepaired && !this.oConsumed) {
+                const distToJ = Math.hypot(oChar.curX - dX, oChar.curY - dY);
+                if (distToJ < 10) {
+                    this.oConsumed = true;
+                }
+            }
         }
 
         // === 'O' / 'J': EMPAREJAMIENTO VISUAL ===
-        if (this.snapCharIdx >= 0) {
+        if (this.snapCharIdx >= 0 && !this.oConsumed) {
             const oChar = this.chars[this.snapCharIdx];
             if (oChar) {
                 // El estilo de destino es el mismo que el de la letra ancla J
@@ -1042,7 +1085,8 @@ export class SilkCanvas {
     drawSilk(ctx) {
         ctx.save();
         ctx.fillStyle = "#4a7a9e"; 
-        ctx.globalAlpha = 0.85;
+        ctx.globalAlpha = 0.85 * (1 - this.enrollmentProgress); // v23.0: Desvanece al enrollarse
+        if (ctx.globalAlpha <= 0.01) { ctx.restore(); return; }
         ctx.font = 'bold 10px "Courier New", monospace';
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";

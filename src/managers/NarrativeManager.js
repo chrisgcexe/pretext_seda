@@ -5,6 +5,7 @@
 
 import { analizarViaje } from '../parser.js';
 import { SilkCanvas } from '../systems/SilkSystem.js';
+import { KanjiCanvas } from '../systems/KanjiSystem.js';
 import { ASCIIOcean } from '../systems/OceanSystem.js';
 import { LandTransition } from '../systems/LandSystem.js';
 
@@ -20,12 +21,17 @@ export let targetFrayProgress = 0.0;   // Inicia en reposo absoluto
 export let currentFrayProgress = 0.0;
 export const FRAY_SCROLL_SENSITIVITY = 0.00018; // De 0.00025 a 0.00018 para dar más tiempo de lectura/observación
 export const FRAY_LERP_FACTOR = 0.15; // De 0.06 a 0.15 para eliminar el delay percibido en el seguimiento del scroll
+export const KANJI_SCROLL_SENSITIVITY = 0.0003; // Sensibilidad para el deshilachado del kanji
 
 export let silkCoreP0 = null;
+export let kanjiCore = null;
 let pendingP0 = null; // Buffer para el primer párrafo secuencial
+let japaneseWomanMarked = false; // Flag para marcar solo la primera mención
 
 export let minScrollAllowed = 0;
 export function setMinScrollAllowed(val) { minScrollAllowed = val; }
+export let kanjiProgress = 0;
+export function updateKanjiProgress(val) { kanjiProgress = val; }
 
 // --- FUNCIONES CORE ---
 
@@ -38,7 +44,7 @@ export let frayMinProgress = 0.0; // Milestone lock (Sticky Progress)
 export function setFrayMaxProgress(val) { frayMaxProgress = val; }
 export function setFrayMinProgress(val) { frayMinProgress = val; }
 
-export function updateTargetFrayProgress(delta) { 
+export function updateTargetFrayProgress(delta) {
     targetFrayProgress += delta;
     // Clamping dinámico basado en hitos alcanzados
     targetFrayProgress = Math.max(frayMinProgress, Math.min(frayMaxProgress, targetFrayProgress));
@@ -52,6 +58,19 @@ export function lockScroll(e) {
     if (minScrollAllowed > 0 && window.scrollY < minScrollAllowed) {
         window.scrollTo(0, minScrollAllowed);
         e.preventDefault();
+        return false;
+    }
+
+    // BLOQUEO KANJI: Si la muchacha japonesa está deshilachándose, capturamos el scroll
+
+    if (kanjiCore && kanjiCore.isLocked) {
+        e.preventDefault();
+        const delta = e.deltaY * KANJI_SCROLL_SENSITIVITY;
+        kanjiProgress = Math.max(0, Math.min(1, kanjiProgress + delta));
+
+        if (kanjiCore.isDone) {
+            setTransitionLocked(false);
+        }
         return false;
     }
 
@@ -86,7 +105,7 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
         const trans = new LandTransition(ultimoTextoLeido, textoParrafo, contenedorPadre, ultimoElementoInyectado, null);
         trans.track.id = `parrafo-viaje-${index}`;
         trans.track.setAttribute('data-index', index);
-        trans.canvas.id = `camino-${activeTransitions.length + 1}`; 
+        trans.canvas.id = `camino-${activeTransitions.length + 1}`;
         activeTransitions.push(trans);
     }
     ultimoTextoLeido = textoParrafo;
@@ -123,17 +142,17 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
             spanSeda.className = 'silk-part';
             // Guardamos la referencia para cuando llegue P1
             pendingP0 = { el: p, span: spanSeda, text: textoParrafo };
-            
+
             p.appendChild(spanSeda);
             contenedorPadre.appendChild(p);
             return p;
-        } 
-        
+        }
+
         if (index === 1 && pendingP0) {
             // PÁRRAFO 1: PUNTO DE CORTE (v7.0)
             p.classList.add('p-initial-fray');
-            
-            const limitJ = textoParrafo.lastIndexOf('J') + 1; 
+
+            const limitJ = textoParrafo.lastIndexOf('J') + 1;
             const parteSeda = textoParrafo.substring(0, limitJ);
             const parteEstatica = textoParrafo.substring(limitJ);
 
@@ -159,7 +178,7 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
 
             silkCoreP0 = new SilkCanvas(elements, fullSilkText, (pendingP0.text + " " + parteSeda).length - 1);
             silkCoreP0.hangingTarget = spanEstatica;
-            
+
             pendingP0 = null; // Limpiamos buffer
             return p;
         }
@@ -168,7 +187,25 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
         p.innerText = textoParrafo;
 
         if (/H[eé]l[eé]ne/i.test(textoParrafo) && (textoParrafo.includes("mujer") || textoParrafo.includes("esposa"))) p.dataset.trigger = "helene";
-        if (/ojos/i.test(textoParrafo) && /oriental/i.test(textoParrafo)) p.dataset.trigger = "japanese_woman";
+
+        // Marcado de la Mujer Japonesa (primera mención p13/p14 aprox)
+        if (textoParrafo.includes("rostro de la mujer")) {
+            p.dataset.trigger = "japanese_woman";
+            if (!japaneseWomanMarked) {
+                p.id = "japanese-woman-mention"; // ID único para anclaje narrativo
+                p.classList.add('narrative-anchor-point');
+
+                // Inserción precisa tras la frase solicitada
+                p.innerText = textoParrafo.replace("rostro de la mujer", "rostro de la mujer(女)");
+
+                // INICIALIZACIÓN KANJI SYSTEM (v1.0)
+                kanjiCore = new KanjiCanvas(p);
+
+
+            }
+        } else if (/ojos/i.test(textoParrafo) && /oriental/i.test(textoParrafo)) {
+            p.dataset.trigger = "japanese_woman"; // Mantenemos el trigger para menciones secundarias si es necesario
+        }
 
         contenedorPadre.appendChild(p);
         return p;
@@ -237,7 +274,7 @@ export function inyectarParrafo(textoParrafo, contenedorPadre, ultimoElementoIny
 
     // --- MÁSCARA DE FONDO (Carcasa v4.12: Aire Ampliado) ---
     // Aumentamos el margen para que el barco se sienta más sólido
-    ctx.fillStyle = '#fdfcf0'; 
+    ctx.fillStyle = '#fdfcf0';
     linesArray.forEach((line, i) => {
         const h = PADDING + i * LINE_HEIGHT;
         const x = lineInfo[i].startX;

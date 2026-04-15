@@ -1,15 +1,18 @@
 html {
-    background: #fdfcf0; /* Fondo base en el nivel más bajo */
+    background: #fdfcf0;
+    /* Fondo base en el nivel más bajo */
 }
 
 body {
     margin: 0;
     padding: 120px 20px;
     width: 100%;
-    background: transparent; /* Cuerpo transparente para ver la brújula */
+    background: transparent;
+    /* Cuerpo transparente para ver la brújula */
     overflow-x: hidden;
     position: relative;
-    z-index: 1; /* Texto por encima de la brújula */
+    z-index: 1;
+    /* Texto por encima de la brújula */
     color: #ffffff;
     font-family: 'Courier New', monospace;
     font-size: 18px;
@@ -18,35 +21,7 @@ body {
     align-items: center;
 }
 
-/* NARRATIVE COMPASS (HIDDEN) */
-#narrative-compass, #compass-svg, .compass-node-text, .compass-thread {
-    display: none !important;
-    visibility: hidden !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-}
 
-/* 
-PLACEHOLDER: El resto de estilos del compás han sido removidos para evitar confusiones.
-*/
-
-.memo-reset-btn {
-    pointer-events: all;
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    background: rgba(139, 69, 19, 0.05);
-    border: 1px solid rgba(139, 69, 19, 0.1);
-    color: rgba(139, 69, 19, 0.4);
-    font-size: 8px;
-    text-transform: uppercase;
-    cursor: pointer;
-    padding: 4px 12px;
-    border-radius: 12px;
-    transition: all 0.3s ease;
-    z-index: 100; /* Siempre por encima */
-}
-.memo-reset-btn:hover { background: rgba(139, 69, 19, 0.1); color: #8B4513; }
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
@@ -57,7 +32,8 @@ PLACEHOLDER: El resto de estilos del compás han sido removidos para evitar conf
 
 #libro {
     width: 100%;
-    max-width: 100vw; /* Prevent overflow */
+    max-width: 100vw;
+    /* Prevent overflow */
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -153,11 +129,25 @@ canvas.hilo-narrativo {
     transition: opacity 0.7s ease;
 }
 
+.kanji-overlay-canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    z-index: 18;
+    /* Just below silk-overlay (20) */
+    background: transparent;
+    transition: opacity 0.5s ease;
+}
+
 .p-initial-fray {
     position: relative;
     z-index: 5;
     visibility: visible;
-    color: transparent; /* El texto es invisible pero reserva su espacio */
+    color: transparent;
+    /* El texto es invisible pero reserva su espacio */
     font-family: 'Courier New', monospace;
     font-size: clamp(14px, 4.2vw, 16px);
 }
@@ -173,14 +163,7 @@ canvas.hilo-narrativo {
     display: inline;
 }
 
-/* --- EFECTO HILO DESGARRO (Legacy Support) --- */
-.fray-char {
-    display: inline-block;
-    white-space: pre;
-    will-change: transform, opacity, left, top;
-    transition: none;
-    pointer-events: none;
-}
+
 
 #unravel-thread {
     pointer-events: none;

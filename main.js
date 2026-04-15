@@ -10,14 +10,15 @@ if ('scrollRestoration' in history) {
     history.scrollRestoration = 'manual';
 }
 
-import { 
-    activeOceans, 
-    activeTransitions, 
-    textoLeido, 
-    isTransitionLocked, 
-    targetFrayProgress, 
-    currentFrayProgress, 
+import {
+    activeOceans,
+    activeTransitions,
+    textoLeido,
+    isTransitionLocked,
+    targetFrayProgress,
+    currentFrayProgress,
     silkCoreP0,
+    kanjiCore,
     FRAY_LERP_FACTOR,
     setTransitionLocked,
     setFrayTransitionStarted,
@@ -29,7 +30,9 @@ import {
     lockScroll,
     inyectarParrafo,
     minScrollAllowed,
-    setMinScrollAllowed
+    setMinScrollAllowed,
+    kanjiProgress,
+    updateKanjiProgress
 } from './src/managers/NarrativeManager.js';
 
 
@@ -40,12 +43,13 @@ let frayPhase = 'P0_FRAY';
 let lastScrollY = window.scrollY;
 
 // Auto-scroll state
-let autoScrollFrom  = 0;    // scrollY inicial del auto-scroll
-let autoScrollTo    = 0;    // scrollY objetivo (P1 centrado)
-let autoScrollT0    = 0;    // timestamp de inicio
-const AUTO_SCROLL_MS = 950;  // De 1400 a 950 para más dinamismo
-const WAIT_P1_MS     = 1000; // De 2000 a 1000 para reducir el bloqueo percibido en el segundo párrafo
-let waitP1T0         = 0;    // timestamp de inicio del wait
+let autoScrollFrom = 0;    // scrollY inicial del auto-scroll
+let autoScrollTo = 0;    // scrollY objetivo (P1 centrado)
+let autoScrollT0 = 0;    // timestamp de inicio
+const AUTO_SCROLL_MS = 1400; // Restaurado a 1400 para un scroll más cinematográfico y suave
+const WAIT_P1_MS = 1000; // De 2000 a 1000 para reducir el bloqueo percibido en el segundo párrafo
+let waitP1T0 = 0;    // timestamp de inicio del wait
+let kanjiWaitT0 = 0;    // v32.0: Marcador de tiempo para el retardo de lectura (Kanji)
 
 /**
  * ENGINE LOOP
@@ -99,19 +103,19 @@ function setupScrollEngine() {
             const allRects = [];
             document.querySelectorAll('.normal-text').forEach(el => {
                 // El OBJETIVO de la amnistía es el párrafo al que queremos conectar (P1)
-                const isTarget = (el === p1); 
-                
+                const isTarget = (el === p1);
+
                 const staticPart = el.querySelector('.static-part');
                 if (staticPart) {
                     const rects = Array.from(staticPart.getClientRects());
                     if (rects.length > 0) {
                         const r1 = rects[0];
-                        allRects.push({ 
-                            top: r1.top - 5, 
-                            bottom: r1.bottom, 
-                            left: r1.left, 
+                        allRects.push({
+                            top: r1.top - 5,
+                            bottom: r1.bottom,
+                            left: r1.left,
                             right: r1.right,
-                            isTarget: isTarget 
+                            isTarget: isTarget
                         });
                         if (rects.length > 1) {
                             const last = rects.slice(1);
@@ -126,12 +130,12 @@ function setupScrollEngine() {
                     }
                 } else {
                     const r = el.getBoundingClientRect();
-                    allRects.push({ 
-                        top: r.top - 5, 
-                        bottom: r.bottom, 
-                        left: r.left, 
+                    allRects.push({
+                        top: r.top - 5,
+                        bottom: r.bottom,
+                        left: r.left,
                         right: r.right,
-                        isTarget: isTarget 
+                        isTarget: isTarget
                     });
                 }
             });
@@ -152,13 +156,13 @@ function setupScrollEngine() {
                     // Calculamos el target para centrar P1
                     const rectP1now = p1.getBoundingClientRect();
                     autoScrollFrom = window.scrollY;
-                    autoScrollTo   = window.scrollY + rectP1now.top + rectP1now.height / 2 - vH / 2;
-                    autoScrollT0   = Date.now();
-                    
+                    autoScrollTo = window.scrollY + rectP1now.top + rectP1now.height / 2 - vH / 2;
+                    autoScrollT0 = Date.now();
+
                     frayPhase = 'SCROLL_TO_P1';
-                    setFrayMaxProgress(1.01); 
+                    setFrayMaxProgress(1.01);
                     setFrayMinProgress(0.9); // SELLAMOS P0: No se puede des-deshilachar el primer párrafo
-                    setFrayInputEnabled(false); 
+                    setFrayInputEnabled(false);
                     console.log('SEDA: P0 done → Handover ejecutado → SCROLL_TO_P1', autoScrollTo);
                 }
             }
@@ -169,7 +173,7 @@ function setupScrollEngine() {
                 const elapsed = Date.now() - autoScrollT0;
                 const t = Math.min(1, elapsed / AUTO_SCROLL_MS);
                 // Ease in-out cúbico: suave inicio y suave frenado
-                const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+                const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
                 window.scrollTo(0, autoScrollFrom + (autoScrollTo - autoScrollFrom) * ease);
 
                 if (t >= 1) {
@@ -193,7 +197,7 @@ function setupScrollEngine() {
                 // Scroll bloqueado. El deltaY deshilacha P1 (progress 0.9 → 1.0).
                 if (silkCoreP0.isBroken) {
                     frayPhase = 'BROKEN';
-                    // EVITAR TELETRANSPORTACIÓN (POPPING ASQUEROSO): 
+
                     // Si el usuario siguió scrolleando fuerte durante o justo después del quiebre, 
                     // la inercia del scroll deja el targetFrayProgress en 1.01. Al reconectar, 
                     // el sistema asume que ya adelantó texto y lo teletransporta 30% del camino instantáneamente.
@@ -206,14 +210,14 @@ function setupScrollEngine() {
 
             else if (frayPhase === 'BROKEN') {
                 // Scroll bloqueado hasta que el usuario cose J con O.
-                 if (silkCoreP0.isRepaired) {
-                     frayPhase = 'POST_REPAIR_CONSUME';
-                     setFrayMaxProgress(2.0); 
-                     setFrayMinProgress(1.0); // SELLAMOS P1 pre-corte: No se puede volver al estado roto/fray1
-                     
-                     // La transparencia del texto ahora se maneja internamente en transitionToState(REPAIRED)
-                     console.log('SEDA: Repaired → POST_REPAIR_CONSUME');
-                 }
+                if (silkCoreP0.isRepaired) {
+                    frayPhase = 'POST_REPAIR_CONSUME';
+                    setFrayMaxProgress(2.0);
+                    setFrayMinProgress(1.0); // SELLAMOS P1 pre-corte: No se puede volver al estado roto/fray1
+
+                    // La transparencia del texto ahora se maneja internamente en transitionToState(REPAIRED)
+                    console.log('SEDA: Repaired → POST_REPAIR_CONSUME');
+                }
             }
 
             else if (frayPhase === 'POST_REPAIR_CONSUME') {
@@ -235,7 +239,70 @@ function setupScrollEngine() {
             // ============================================================
             const newProg = currentFrayProgress + (targetFrayProgress - currentFrayProgress) * FRAY_LERP_FACTOR;
             updateCurrentFrayProgress(newProg);
-            silkCoreP0.update(newProg, finalDX, finalDY);
+
+            const p0El = document.getElementById('p0');
+            const rectP0 = p0El ? p0El.getBoundingClientRect() : null;
+            silkCoreP0.update(newProg, finalDX, finalDY, rectP0);
+        }
+
+        // 4. Kanji Mechanic (Independent)
+        if (kanjiCore) {
+            const relEl = document.getElementById('japanese-woman-mention');
+            const rect = relEl ? relEl.getBoundingClientRect() : null;
+
+            // v27.0: Kanji Precise Trigger (Photo 1 Alignment)
+            const kanjiLerpFactor = 0.12;
+            // Bloqueamos el progreso en 0 si no hemos llegado al threshold de enganche
+            const activeKanjiTarget = kanjiCore.isLocked ? kanjiProgress : 0;
+            const smoothKanjiProg = kanjiCore.progress + (activeKanjiTarget - kanjiCore.progress) * kanjiLerpFactor;
+
+            // Sincronizar bloqueo magnético y off-screen safety
+            kanjiCore.update(smoothKanjiProg, rect);
+
+            if (relEl) {
+                // Cálculo de Opacidad por Proximidad (v4.1)
+                const fadeStart = vH * 0.5;
+                const fadeEnd = vH * 0.15; // v33.0: Threshold desplazado al tope para permitir lectura del texto inferior
+                const proximityAlpha = Math.max(0, Math.min(1, (fadeStart - rect.top) / (fadeStart - fadeEnd)));
+                const targetAlpha = kanjiCore.isDone ? 1 : proximityAlpha;
+
+                // Suavizado de la entrada visual del hilo
+                kanjiCore.globalAlpha += (targetAlpha - kanjiCore.globalAlpha) * 0.1;
+
+                // Trigger del bloqueo Magnético con Lógica de Salida (v33.0)
+                // Enganche cuando el CENTRO del párrafo pasa el 15% superior (Comfort Reading)
+                const kanjiCenter = rect.top + rect.height / 2;
+                if (kanjiCore.state === kanjiCore.STATE.READY && kanjiCenter <= fadeEnd) {
+                    if (kanjiWaitT0 === 0) {
+                        kanjiWaitT0 = Date.now();
+                        console.log('KANJI: Reading Zone reached. Waiting 400ms...');
+                    } else if (Date.now() - kanjiWaitT0 >= 400) {
+                        kanjiCore.state = kanjiCore.STATE.LOCKING;
+                        kanjiCore.isLocked = true;
+                        setTransitionLocked(true);
+
+                        // v33.0: Snap-Back preciso al nuevo threshold de salida
+                        if (kanjiCenter < fadeEnd - 15) {
+                            window.scrollTo(0, window.scrollY + (kanjiCenter - fadeEnd));
+                        }
+                        console.log('KANJI: Wait done. Engagement locked at top exit.');
+                    }
+                } else if (kanjiCore.state === kanjiCore.STATE.READY && kanjiCenter > fadeStart) {
+                    // Reset del timer si el usuario scrollea hacia arriba/atrás
+                    if (kanjiWaitT0 !== 0) {
+                        kanjiWaitT0 = 0;
+                        console.log('KANJI: Reading Zone left. Timer reset.');
+                    }
+                }
+
+
+
+            }
+
+            // Sincronizar bloqueo global con estado del sistema kanji (v4 state logic)
+            if (kanjiCore.isDone && isTransitionLocked) {
+                setTransitionLocked(false);
+            }
         }
 
         requestAnimationFrame(update);
@@ -274,8 +341,4 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('wheel', lockScroll, { passive: false });
     window.addEventListener('touchmove', lockScroll, { passive: false });
 
-    const leftoverCompass = document.getElementById('narrative-compass');
-    if (leftoverCompass) leftoverCompass.remove();
-
-    console.log("SEDA: Modular Engine Active (v2.0)");
 });
