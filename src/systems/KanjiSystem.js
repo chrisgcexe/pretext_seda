@@ -198,33 +198,130 @@ export class KanjiCanvas {
     }
 
     updatePhysics() {
-        // --- MATH FIX v6.3: Deshilachamos hasta el inicio del bloque (fija el kanji en el destino) ---
-        const stopIndex = this.kanjiIndex;
+        // --- MATH FIX v6.6: Paramos deshilachado en el Kanji (idx + 1). El '(' previo se queda quieto.
+        const stopIndex = this.kanjiIndex + 1; 
         const totalToFray = Math.max(0, this.chars.length - stopIndex);
         const currentActiveFloat = (1 - this.progress) * totalToFray + stopIndex;
 
         const currentActiveIdx = Math.floor(currentActiveFloat);
         const stepT = 1 - (currentActiveFloat % 1);
 
+        // --- CARACTERES (Momentum Logic v6.0) ---
+        // v31.4: Reordenado. Primero actualizamos caracteres para que los nodos del hilo
+        // usen las posiciones frescas de este mismo frame (Evita el lag/desfase visual).
+        this.threadsToDraw = [];
+        this.chars.forEach((c, i) => {
+            const isFrayed = i > currentActiveIdx;
+            const isActive = i === currentActiveIdx && this.progress > 0;
 
-        // --- PHYSICS v30.0: Ghost Ship Fall ---
-        let spring = 0.05;
-        let damping = 0.85;
+            const sX = c.homeX;
+            const sY = c.homeY;
 
-        if (this.state === this.STATE.CUT) {
-            spring = 0.04;
-            damping = 0.75; // "Cae" con más peso
-            if (this.targetYOffset === 0) {
-                this.targetYOffset = 280; // Distancia de caída
-                this.yVelocity = 4.5; // Impulso inicial
-                this.targetAngle = 3.5; // Inclinación
+            // v31.9: Elevamos chequeo de anclaje para que el Kanji llegue con autoridad
+            c.isAnchored = c.isHUDAnchor && this.progress > 0.95;
+
+            if (c.isAnchored) {
+                c.opacity = 1.0;
+                c.curX += (this.safeZoneX - c.curX) * 0.3; // Interpolación suave final
+                c.curY += (this.safeZoneY - c.curY) * 0.3;
+                c.el.style.visibility = 'hidden';
+            } else if (isFrayed) {
+                c.vX += (this.safeZoneX - c.curX) * 0.25;
+                c.vY += (this.safeZoneY - c.curY) * 0.25;
+                c.vX *= 0.6; c.vY *= 0.6;
+                c.curX += c.vX; c.curY += c.vY;
+
+                c.el.style.visibility = 'hidden';
+
+                const isLastArrived = (i === currentActiveIdx + 1);
+                const distToSafe = Math.hypot(c.curX - this.safeZoneX, c.curY - this.safeZoneY);
+                // v31.5: Culling agresivo. Si no es anchor y está cerca del destino (o terminó el fray), opacidad 0.
+                const isArrived = distToSafe < 25;
+                const frayFinished = this.progress > 0.98;
+                const canShow = isLastArrived && !isArrived && !frayFinished;
+                
+                c.opacity = canShow ? Math.max(0, 1 - (1 - stepT) * 2) : 0;
+
+
+            } else if (isActive) {
+                const t = stepT;
+                const elastic = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+                const targetX = sX + (this.safeZoneX - sX) * elastic;
+                const targetY = sY + (this.safeZoneY - sY) * elastic;
+
+                c.vX += (targetX - c.curX) * 0.4;
+                c.vY += (targetY - c.curY) * 0.4;
+                c.vX *= 0.65; c.vY *= 0.65;
+                c.curX += c.vX; c.curY += c.vY;
+
+                // v31.6: Cull final para el active char si no es anchor
+                const distToSafe = Math.hypot(c.curX - this.safeZoneX, c.curY - this.safeZoneY);
+                const isArrived = distToSafe < 25;
+                const finalPhaseCull = (isArrived && !c.isHUDAnchor) ? 0 : 1;
+
+                c.opacity = Math.max(0, Math.min(1, (0.95 - elastic) * 10)) * finalPhaseCull;
+                c.el.style.visibility = 'hidden';
+
+            } else {
+                c.vX = 0; c.vY = 0;
+                c.el.style.visibility = 'visible';
+                c.opacity = 1.0;
+
+                const distFromActive = Math.abs(i - currentActiveIdx);
+
+                if (distFromActive < 12 && c.isVisible && this.state !== this.STATE.CUT) {
+                    let prevChar = null;
+                    let prevIdx = -1;
+                    // v31.8: Solo reconectamos hasta el currentActiveIdx y sin pasarnos del límite.
+                    // No conectamos a letras que ya se soltaron y están volando (o invisibles)
+                    for (let k = i + 1; k <= currentActiveIdx && k < this.chars.length; k++) {
+                        if (this.chars[k].isVisible) {
+                            prevChar = this.chars[k];
+                            prevIdx = k;
+                            break;
+                        }
+                    }
+
+                    if (prevChar) {
+                        const sameLine = Math.abs(prevChar.homeY - c.homeY) < 15;
+                        const isSameWord = (prevIdx - i === 1); 
+
+                        if (sameLine) {
+                            const tensionFactor = 1 - (distFromActive / 12);
+                            const psY = prevChar.homeY;
+
+                            const despX = prevChar.curX - prevChar.homeX;
+                            const despY = prevChar.curY - psY;
+                            
+                            if (isSameWord) {
+                                // v31.4: Mayor fuelle (0.42) para que se sienta la conexión física
+                                c.curX = sX + despX * (0.42 * tensionFactor);
+                                c.curY = sY + despY * (0.42 * tensionFactor);
+                                this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.45 * tensionFactor });
+                                c.el.style.visibility = 'hidden'; // Forzar dibujo en canvas para ver el estiramiento
+                            } else {
+                                const distVisual = Math.hypot(c.curX - prevChar.curX, c.curY - prevChar.curY);
+                                if (distVisual < 45) {
+                                    c.curX = sX + despX * (0.12 * tensionFactor);
+                                    c.curY = sY + despY * (0.12 * tensionFactor);
+                                    this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.22 * tensionFactor });
+                                    c.el.style.visibility = 'hidden'; // Forzar dibujo en canvas
+                                } else {
+                                    c.curX = sX; c.curY = sY;
+                                }
+                            }
+                        } else {
+                            c.curX = sX; c.curY = sY;
+                        }
+                    } else {
+                        c.curX = sX; c.curY = sY;
+                    }
+                } else {
+                    c.curX = sX; c.curY = sY;
+                }
+
             }
-        }
-
-        // v31.1: Asymptotic smoothing instead of spring for yOffset (No bounce)
-        this.yOffset += (this.targetYOffset - this.yOffset) * 0.08;
-        this.angleOffset += (this.targetAngle - this.angleOffset) * 0.1;
-
+        });
 
         // --- NODOS ---
         const lastNode = this.nodeCount - 1;
@@ -232,12 +329,16 @@ export class KanjiCanvas {
             // Si currentActiveIdx === length, usamos el último char como ancla visual
             const targetIdx = Math.min(this.chars.length - 1, currentActiveIdx);
             const targetChar = this.chars[targetIdx];
-            this.nodes[0].x = targetChar.homeX;
-            this.nodes[0].y = targetChar.homeY;
+            
+            // v31.4: Ahora usamos targetChar recién actualizado (Lag 0)
+            this.nodes[0].x = targetChar.curX;
+            this.nodes[0].y = targetChar.curY;
+            
             this.nodes[lastNode].x = this.safeZoneX;
             this.nodes[lastNode].y = this.safeZoneY;
         } else {
-            // v24.0: Metáfora del ovillo en el corte
+            // v24.0: Metáfora del ovillo en el corte (SilkSystem sync)
+            let enroll = 0;
             if (Date.now() - this.cutTime > 2000) {
                 if (!this.enrollmentStarted) this.enrollmentStarted = true;
                 if (this.enrollmentProgress < 1.0) {
@@ -246,17 +347,16 @@ export class KanjiCanvas {
                         this.enrollmentProgress = 1.0;
                     }
                 }
+                enroll = this.enrollmentProgress;
             }
 
+            // v31.7: Caída suave al "hilo colgante" y luego enrollado
+            const targetHangY = this.safeZoneY + (60 * (1 - enroll));
+            this.nodes[0].x += (this.safeZoneX - this.nodes[0].x) * 0.15;
+            this.nodes[0].y += (targetHangY - this.nodes[0].y) * 0.15;
+            
             this.nodes[lastNode].x = this.safeZoneX;
             this.nodes[lastNode].y = this.safeZoneY;
-
-            if (this.enrollmentStarted) {
-                // v31.0: Ovillo más drástico. El ancla muelle tira de todo el sistema.
-                const t = this.enrollmentProgress;
-                this.nodes[0].x += (this.safeZoneX - this.nodes[0].x) * (t * 0.15);
-                this.nodes[0].y += (this.safeZoneY - this.nodes[0].y) * (t * 0.15);
-            }
         }
 
         // Gravedad constante para el "sag". En el enrollado, la gravedad disminuye.
@@ -277,85 +377,41 @@ export class KanjiCanvas {
             }
         }
 
-        const restDist = 28;
-        for (let j = 0; j < 8; j++) {
+        // --- DINÁMICA DE SEDA VERLET (SilkSystem logic) ---
+        const iterations = 24;
+        const relaxFactor = 1.02; // Tensado suave
+        const nStart = this.nodes[0];
+        const nEnd = this.nodes[lastNode];
+        const totalDist = Math.hypot(nEnd.x - nStart.x, nEnd.y - nStart.y);
+        const targetLen = totalDist * relaxFactor;
+        const segLen = targetLen / (this.nodeCount - 1);
+
+        for (let j = 0; j < iterations; j++) {
             for (let i = 0; i < this.nodeCount - 1; i++) {
                 const n1 = this.nodes[i];
                 const n2 = this.nodes[i + 1];
                 const dx = n2.x - n1.x;
                 const dy = n2.y - n1.y;
                 const d = Math.hypot(dx, dy);
-                const diff = (d - restDist) / (d || 1);
+                const diff = (segLen - d) / (d || 1);
+                
                 const m1 = (i === 0 && this.state !== this.STATE.CUT) ? 0 : 0.5;
                 const m2 = (i + 1 === lastNode) ? 0 : 0.5;
                 if (m1 + m2 === 0) continue;
-                const totalM = m1 + m2;
-                n1.x += dx * (m1 / totalM) * diff;
-                n1.y += dy * (m1 / totalM) * diff;
-                n2.x -= dx * (m2 / totalM) * diff;
-                n2.y -= dy * (m2 / totalM) * diff;
+                
+                const offsetX = dx * diff * 0.5;
+                const offsetY = dy * diff * 0.5;
+                
+                if (m1 !== 0) {
+                    n1.x -= offsetX;
+                    n1.y -= offsetY;
+                }
+                if (m2 !== 0) {
+                    n2.x += offsetX;
+                    n2.y += offsetY;
+                }
             }
         }
-
-        // --- CARACTERES (Momentum Logic v6.0) ---
-        this.chars.forEach((c, i) => {
-            const isFrayed = i > currentActiveIdx;
-            const isActive = i === currentActiveIdx && this.progress > 0;
-
-            if (isFrayed) {
-                // LÓGICA SEDAL: Llegada inercial al destino
-                // v6.4: Tighter arrival (Fast Force, High Damping)
-                c.vX += (this.safeZoneX - c.curX) * 0.25;
-                c.vY += (this.safeZoneY - c.curY) * 0.25;
-                c.vX *= 0.6; c.vY *= 0.6;
-                c.curX += c.vX; c.curY += c.vY;
-
-                c.el.style.visibility = 'hidden';
-
-                const isLastArrived = (i === currentActiveIdx + 1);
-                c.isAnchored = c.isHUDAnchor && this.progress > 0.95;
-
-                if (c.isAnchored) {
-                    c.opacity = 1.0;
-                } else {
-                    // Solo visible mientras termina de llegar
-                    const distToSafe = Math.hypot(c.curX - this.safeZoneX, c.curY - this.safeZoneY);
-                    c.opacity = isLastArrived ? Math.max(0, 1 - (1 - stepT) * 2) * (distToSafe / 50 + 0.1) : 0;
-                }
-
-            } else if (isActive) {
-                // LÓGICA SEDAL: Peeling Inercial
-                const t = stepT;
-                const elastic = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-
-                const targetX = c.homeX + (this.safeZoneX - c.homeX) * elastic;
-                const targetY = c.homeY + (this.safeZoneY - c.homeY) * elastic;
-
-                // Suavizado inercial para que no parezca un lerp rígido
-                // v6.4: Tighter peeling (Snappy reaction, less overshoot)
-                c.vX += (targetX - c.curX) * 0.4;
-                c.vY += (targetY - c.curY) * 0.4;
-                c.vX *= 0.65; c.vY *= 0.65;
-                c.curX += c.vX; c.curY += c.vY;
-
-                c.opacity = Math.max(0, Math.min(1, (0.95 - elastic) * 10));
-                c.el.style.visibility = 'hidden';
-
-            } else {
-                // LÓGICA SEDAL: Estático
-                c.curX = c.homeX;
-                c.curY = c.homeY;
-                c.vX = 0; c.vY = 0;
-                c.el.style.visibility = 'visible';
-                c.opacity = 1.0;
-
-                const distFromActive = Math.abs(i - currentActiveIdx);
-                if (distFromActive < 8 && this.globalAlpha > 0.5) {
-                    const tension = 1 - (distFromActive / 8);
-                    c.curY += Math.sin(Date.now() * 0.03) * (1.8 * tension * this.globalAlpha);
-                }
-            }
-        });
 
         if (this.snapT > 0) {
             this.snapT--;
@@ -377,6 +433,10 @@ export class KanjiCanvas {
 
         this.drawSilkPath(ctx);
 
+        if (this.threadsToDraw) {
+            this.threadsToDraw.forEach(t => this.drawThread(ctx, t.x1, t.y1, t.x2, t.y2, t.tension));
+        }
+
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
 
@@ -389,7 +449,7 @@ export class KanjiCanvas {
                 ctx.globalAlpha = finalAlpha;
                 if (c.isHUDAnchor && c.isAnchored) {
                     ctx.fillStyle = "#4a7a9e";
-                    ctx.font = `600 ${this.baseSize * 1.5}px "Courier New", monospace`;
+                    ctx.font = `600 ${this.baseSize * 1.15}px "Courier New", monospace`;
                 } else {
                     ctx.fillStyle = "#333";
                     ctx.font = this.fontString;
@@ -403,12 +463,8 @@ export class KanjiCanvas {
                 let drawX = c.curX;
                 let drawY = c.curY;
 
-                if (!c.isAnchored) {
-                    const tiltY = (c.homeX - window.innerWidth / 2) * Math.sin(this.angleOffset * Math.PI / 180);
-                    drawX = c.curX;
-                    drawY = c.curY + this.yOffset + tiltY;
-                }
-
+                // v31.3: Visual Offset ahora está integrado en curX/Y para una sincronía absoluta
+                // Solo mantenemos el render directo.
                 ctx.fillText(c.char, drawX + offX, drawY + offY);
                 ctx.restore();
             }
@@ -427,12 +483,15 @@ export class KanjiCanvas {
             const p1 = this.nodes[i];
             const p2 = this.nodes[i + 1];
             const p3 = this.nodes[Math.min(i + 2, this.nodeCount - 1)];
-            const midX1 = (p1.x + p2.x) / 2;
-            const midY1 = (p1.y + p2.y) / 2;
-            const midX2 = (p2.x + p3.x) / 2;
-            const midY2 = (p2.y + p3.y) / 2;
+            
+            // v31.4: Fix Gap - El primer punto de la curva DEBE ser exactamente nodes[0]
+            const midX1 = (i === 0) ? p1.x : (p1.x + p2.x) / 2;
+            const midY1 = (i === 0) ? p1.y : (p1.y + p2.y) / 2;
+            const midX2 = (i === this.nodeCount - 2) ? p2.x : (p2.x + p3.x) / 2;
+            const midY2 = (i === this.nodeCount - 2) ? p2.y : (p2.y + p3.y) / 2;
+            
             const arcDist = Math.hypot(midX2 - midX1, midY2 - midY1);
-            let t = accumulator / (arcDist || 1);
+            let t = (i === 0) ? 0 : (accumulator / (arcDist || 1)); // Reset t at start to anchor dot 0
             while (t < 1.0) {
                 const bx = (1 - t) * (1 - t) * midX1 + 2 * (1 - t) * t * p2.x + t * t * midX2;
                 const by = (1 - t) * (1 - t) * midY1 + 2 * (1 - t) * t * p2.y + t * t * midY2;
@@ -442,5 +501,37 @@ export class KanjiCanvas {
             accumulator = (t - 1.0) * arcDist;
         }
         ctx.restore();
+    }
+
+    drawThread(ctx, x1, y1, x2, y2, opacity, color = "#4a7a9e") {
+        ctx.save(); 
+        ctx.fillStyle = color; 
+        ctx.globalAlpha = opacity * 0.7; // Más sutil
+        ctx.font = '7px "Courier New", monospace'; // Más pequeño
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const dist = Math.hypot(dx, dy);
+        const midX = x1 + dx * 0.5;
+        const midY = y1 + dy * 0.5;
+        const sag = 3 + (dist * 0.035); 
+
+        const cpX = midX;
+        const cpY = midY + sag;
+
+        // Densidad uniforme para hilos finos
+        const dotGap = 3.5;
+        const steps = Math.max(3, Math.floor(dist / dotGap));
+
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const bx = (1-t)*(1-t)*x1 + 2*(1-t)*t*cpX + t*t*x2;
+            const by = (1-t)*(1-t)*y1 + 2*(1-t)*t*cpY + t*t*y2;
+            ctx.fillText('.', bx, by);
+        }
+        
+        ctx.restore(); 
     }
 }
