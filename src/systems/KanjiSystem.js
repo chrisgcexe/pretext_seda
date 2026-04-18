@@ -217,6 +217,10 @@ export class KanjiCanvas {
             const sX = c.homeX;
             const sY = c.homeY;
 
+            // v31.10: Lógica de Relevo (Relay) - Como SilkSystem
+            // El 'isRelay' es el carácter que acaba de llegar a la zona segura.
+            const isRelay = (i === currentActiveIdx + 1);
+            
             // v31.9: Elevamos chequeo de anclaje para que el Kanji llegue con autoridad
             c.isAnchored = c.isHUDAnchor && this.progress > 0.95;
 
@@ -226,22 +230,16 @@ export class KanjiCanvas {
                 c.curY += (this.safeZoneY - c.curY) * 0.3;
                 c.el.style.visibility = 'hidden';
             } else if (isFrayed) {
-                c.vX += (this.safeZoneX - c.curX) * 0.25;
-                c.vY += (this.safeZoneY - c.curY) * 0.25;
-                c.vX *= 0.6; c.vY *= 0.6;
-                c.curX += c.vX; c.curY += c.vY;
-
+                // Si es el relevo actual, lo mostramos en la zona segura
+                if (isRelay) {
+                    c.curX = this.safeZoneX;
+                    c.curY = this.safeZoneY;
+                    c.opacity = 1.0;
+                } else {
+                    // El resto de los ya deshilachados se ocultan (reemplazados por el nuevo)
+                    c.opacity = 0;
+                }
                 c.el.style.visibility = 'hidden';
-
-                const isLastArrived = (i === currentActiveIdx + 1);
-                const distToSafe = Math.hypot(c.curX - this.safeZoneX, c.curY - this.safeZoneY);
-                // v31.5: Culling agresivo. Si no es anchor y está cerca del destino (o terminó el fray), opacidad 0.
-                const isArrived = distToSafe < 25;
-                const frayFinished = this.progress > 0.98;
-                const canShow = isLastArrived && !isArrived && !frayFinished;
-                
-                c.opacity = canShow ? Math.max(0, 1 - (1 - stepT) * 2) : 0;
-
 
             } else if (isActive) {
                 const t = stepT;
@@ -254,12 +252,8 @@ export class KanjiCanvas {
                 c.vX *= 0.65; c.vY *= 0.65;
                 c.curX += c.vX; c.curY += c.vY;
 
-                // v31.6: Cull final para el active char si no es anchor
-                const distToSafe = Math.hypot(c.curX - this.safeZoneX, c.curY - this.safeZoneY);
-                const isArrived = distToSafe < 25;
-                const finalPhaseCull = (isArrived && !c.isHUDAnchor) ? 0 : 1;
-
-                c.opacity = Math.max(0, Math.min(1, (0.95 - elastic) * 10)) * finalPhaseCull;
+                // El que está volando siempre es visible hasta llegar
+                c.opacity = 1.0;
                 c.el.style.visibility = 'hidden';
 
             } else {
@@ -289,16 +283,21 @@ export class KanjiCanvas {
                         if (sameLine) {
                             const tensionFactor = 1 - (distFromActive / 12);
                             const psY = prevChar.homeY;
-
                             const despX = prevChar.curX - prevChar.homeX;
                             const despY = prevChar.curY - psY;
-                            
+
                             if (isSameWord) {
-                                // v31.4: Mayor fuelle (0.42) para que se sienta la conexión física
-                                c.curX = sX + despX * (0.42 * tensionFactor);
-                                c.curY = sY + despY * (0.42 * tensionFactor);
-                                this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.45 * tensionFactor });
-                                c.el.style.visibility = 'hidden'; // Forzar dibujo en canvas para ver el estiramiento
+                                // v31.11: Limitamos el fuelle. Si la letra ya voló lejos, no arrastra al párrafo.
+                                const totalDesp = Math.hypot(despX, despY);
+                                if (totalDesp < 60) {
+                                    // v31.4: Mayor fuelle (0.42) para que se sienta la conexión física
+                                    c.curX = sX + despX * (0.42 * tensionFactor);
+                                    c.curY = sY + despY * (0.42 * tensionFactor);
+                                    this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.45 * tensionFactor });
+                                    c.el.style.visibility = 'hidden'; // Forzar dibujo en canvas para ver el estiramiento
+                                } else {
+                                    c.curX = sX; c.curY = sY;
+                                }
                             } else {
                                 const distVisual = Math.hypot(c.curX - prevChar.curX, c.curY - prevChar.curY);
                                 if (distVisual < 45) {
