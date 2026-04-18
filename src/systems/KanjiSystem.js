@@ -234,23 +234,21 @@ export class KanjiCanvas {
                 if (isRelay) {
                     c.curX = this.safeZoneX;
                     c.curY = this.safeZoneY;
-                    c.opacity = 1.0;
+                    // v38.0: Relay Suave. Se desvanece gradualmente mientras llega el siguiente para evitar parpadeos.
+                    c.opacity = Math.max(0, 1 - stepT * 2.5); 
                 } else {
-                    // El resto de los ya deshilachados se ocultan (reemplazados por el nuevo)
+                    // El resto de los ya deshilachados se ocultan
                     c.opacity = 0;
                 }
                 c.el.style.visibility = 'hidden';
 
             } else if (isActive) {
                 const t = stepT;
+                // v38.1: Interpolación Bezier pura (sin momentum) para un vuelo de seda perfecto
                 const elastic = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-                const targetX = sX + (this.safeZoneX - sX) * elastic;
-                const targetY = sY + (this.safeZoneY - sY) * elastic;
-
-                c.vX += (targetX - c.curX) * 0.4;
-                c.vY += (targetY - c.curY) * 0.4;
-                c.vX *= 0.65; c.vY *= 0.65;
-                c.curX += c.vX; c.curY += c.vY;
+                c.curX = sX + (this.safeZoneX - sX) * elastic;
+                c.curY = sY + (this.safeZoneY - sY) * elastic;
+                c.vX = 0; c.vY = 0; // Reset momentum
 
                 // El que está volando siempre es visible hasta llegar
                 c.opacity = 1.0;
@@ -266,8 +264,7 @@ export class KanjiCanvas {
                 if (distFromActive < 12 && c.isVisible && this.state !== this.STATE.CUT) {
                     let prevChar = null;
                     let prevIdx = -1;
-                    // v31.8: Solo reconectamos hasta el currentActiveIdx y sin pasarnos del límite.
-                    // No conectamos a letras que ya se soltaron y están volando (o invisibles)
+                    // v38.11: Búsqueda de vecino con límite de arrastre (SilkSystem style)
                     for (let k = i + 1; k <= currentActiveIdx && k < this.chars.length; k++) {
                         if (this.chars[k].isVisible) {
                             prevChar = this.chars[k];
@@ -276,7 +273,14 @@ export class KanjiCanvas {
                         }
                     }
 
-                    if (prevChar) {
+                    // v38.11: El párrafo (i < stopIndex) corta la conexión si el vecino despega demasiado lejos (>50px)
+                    let isCrossLimit = (i < stopIndex && prevIdx > stopIndex);
+                    if (prevChar && i < stopIndex && prevIdx === stopIndex) {
+                        const neighborDesp = Math.hypot(prevChar.curX - prevChar.homeX, prevChar.curY - prevChar.homeY);
+                        if (neighborDesp > 50) isCrossLimit = true; // Snap! El Kanji despega y el párrafo se queda.
+                    }
+
+                    if (prevChar && !isCrossLimit) {
                         const sameLine = Math.abs(prevChar.homeY - c.homeY) < 15;
                         const isSameWord = (prevIdx - i === 1); 
 
@@ -287,24 +291,20 @@ export class KanjiCanvas {
                             const despY = prevChar.curY - psY;
 
                             if (isSameWord) {
-                                // v31.11: Limitamos el fuelle. Si la letra ya voló lejos, no arrastra al párrafo.
-                                const totalDesp = Math.hypot(despX, despY);
-                                if (totalDesp < 60) {
-                                    // v31.4: Mayor fuelle (0.42) para que se sienta la conexión física
-                                    c.curX = sX + despX * (0.42 * tensionFactor);
-                                    c.curY = sY + despY * (0.42 * tensionFactor);
-                                    this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.45 * tensionFactor });
-                                    c.el.style.visibility = 'hidden'; // Forzar dibujo en canvas para ver el estiramiento
-                                } else {
-                                    c.curX = sX; c.curY = sY;
-                                }
+                                // v38.9: Restablecemos el 'feel' sutil de SilkSystem (0.25) sin dampings extraños
+                                const fuelleScale = 0.25 * tensionFactor;
+                                c.curX = sX + despX * fuelleScale;
+                                c.curY = sY + despY * fuelleScale;
+                                this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.3 * tensionFactor });
+                                c.el.style.visibility = 'hidden';
                             } else {
                                 const distVisual = Math.hypot(c.curX - prevChar.curX, c.curY - prevChar.curY);
                                 if (distVisual < 45) {
-                                    c.curX = sX + despX * (0.12 * tensionFactor);
-                                    c.curY = sY + despY * (0.12 * tensionFactor);
-                                    this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.22 * tensionFactor });
-                                    c.el.style.visibility = 'hidden'; // Forzar dibujo en canvas
+                                    const fuelleScale = 0.05 * tensionFactor;
+                                    c.curX = sX + despX * fuelleScale;
+                                    c.curY = sY + despY * fuelleScale;
+                                    this.threadsToDraw.push({ x1: c.curX, y1: c.curY, x2: prevChar.curX, y2: prevChar.curY, tension: 0.15 * tensionFactor });
+                                    c.el.style.visibility = 'hidden'; 
                                 } else {
                                     c.curX = sX; c.curY = sY;
                                 }
@@ -358,9 +358,9 @@ export class KanjiCanvas {
             this.nodes[lastNode].y = this.safeZoneY;
         }
 
-        // Gravedad constante para el "sag". En el enrollado, la gravedad disminuye.
-        const gravity = this.state === this.STATE.CUT ? (0.45 * (1 - this.enrollmentProgress)) : 0.08;
-        const friction = 0.95;
+        // v38.3: Sincronización de físicas globales (SilkSystem spec)
+        const gravity = this.state === this.STATE.CUT ? (0.45 * (1 - this.enrollmentProgress)) : 0.12;
+        const friction = 0.94;
 
         for (let i = 0; i < this.nodeCount; i++) {
             const n = this.nodes[i];
@@ -441,12 +441,16 @@ export class KanjiCanvas {
 
         this.chars.forEach(c => {
             if (c.el.style.visibility === 'hidden' || c.isAnchored) {
+                // v36.1: Si ya terminó todo, solo permitimos ver el ancla real (sin paréntesis residuales)
+                if (this.isDone && !c.isHUDAnchor) return;
+
                 const finalAlpha = Math.max(0, Math.min(1, c.opacity * this.globalAlpha));
                 if (finalAlpha <= 0.01) return;
 
                 ctx.save();
                 ctx.globalAlpha = finalAlpha;
                 if (c.isHUDAnchor && c.isAnchored) {
+                    if (this.hideHUDAnchor) return; // v35.0: Takeover by CompasTension
                     ctx.fillStyle = "#4a7a9e";
                     ctx.font = `600 ${this.baseSize * 1.15}px "Courier New", monospace`;
                 } else {

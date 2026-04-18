@@ -21,7 +21,7 @@ export let targetFrayProgress = 0.0;   // Inicia en reposo absoluto
 export let currentFrayProgress = 0.0;
 export const FRAY_SCROLL_SENSITIVITY = 0.00018; // De 0.00025 a 0.00018 para dar más tiempo de lectura/observación
 export const FRAY_LERP_FACTOR = 0.15; // De 0.06 a 0.15 para eliminar el delay percibido en el seguimiento del scroll
-export const KANJI_SCROLL_SENSITIVITY = 0.0003; // Sensibilidad para el deshilachado del kanji
+export const KANJI_SCROLL_SENSITIVITY = 0.0002; // v38.4: Igualamos sensibilidad al SilkSystem para que no se sienta "rápido" o "saltón"
 
 export let silkCoreP0 = null;
 export let kanjiCore = null;

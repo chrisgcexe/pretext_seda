@@ -898,6 +898,7 @@ export class SilkCanvas {
                 
                 const isAnchor = c.isHUDAnchor;
                 if (isAnchor) {
+                    if (this.hideHUDAnchor) return; // v35.1: Takeover by CompasTension
                     // LETRA ANCLA: ligeramente más grande y semi-bold para dar jerarquía
                     // Azul seda solo cuando está en su posición final (REPAIRED)
                     const anchorColor = this.isRepaired ? "#4a7a9e" : "#3a3a3a";

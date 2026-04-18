@@ -35,6 +35,10 @@ import {
     updateKanjiProgress
 } from './src/managers/NarrativeManager.js';
 
+import { CompasTension } from './src/systems/CompasTension.js';
+
+const compasTension = new CompasTension();
+
 
 // --- STATE MACHINE (v8.3) ---
 // Fases: 'P0_FRAY' → 'SCROLL_TO_P1' → 'WAIT_P1' → 'P1_FRAY' → 'BROKEN' → 'DONE'
@@ -303,6 +307,11 @@ function setupScrollEngine() {
             if (kanjiCore.isDone && isTransitionLocked) {
                 setTransitionLocked(false);
             }
+        }
+
+        // 5. Compass Tension (Final Bridge)
+        if (compasTension) {
+            compasTension.update(silkCoreP0, kanjiCore);
         }
 
         requestAnimationFrame(update);
