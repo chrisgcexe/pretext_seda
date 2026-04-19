@@ -30,14 +30,8 @@ import {
     lockScroll,
     inyectarParrafo,
     minScrollAllowed,
-    setMinScrollAllowed,
-    kanjiProgress,
-    updateKanjiProgress
+    setMinScrollAllowed
 } from './src/managers/NarrativeManager.js';
-
-import { CompasTension } from './src/systems/CompasTension.js';
-
-const compasTension = new CompasTension();
 
 
 // --- STATE MACHINE (v8.3) ---
@@ -254,54 +248,9 @@ function setupScrollEngine() {
             const relEl = document.getElementById('japanese-woman-mention');
             const rect = relEl ? relEl.getBoundingClientRect() : null;
 
-            // v27.0: Kanji Precise Trigger (Photo 1 Alignment)
-            const kanjiLerpFactor = 0.12;
-            // Bloqueamos el progreso en 0 si no hemos llegado al threshold de enganche
-            const activeKanjiTarget = kanjiCore.isLocked ? kanjiProgress : 0;
-            const smoothKanjiProg = kanjiCore.progress + (activeKanjiTarget - kanjiCore.progress) * kanjiLerpFactor;
-
-            // Sincronizar bloqueo magnético y off-screen safety
-            kanjiCore.update(smoothKanjiProg, rect);
-
-            if (relEl) {
-                // Cálculo de Opacidad por Proximidad (v4.1)
-                const fadeStart = vH * 0.5;
-                const fadeEnd = vH * 0.15; // v33.0: Threshold desplazado al tope para permitir lectura del texto inferior
-                const proximityAlpha = Math.max(0, Math.min(1, (fadeStart - rect.top) / (fadeStart - fadeEnd)));
-                const targetAlpha = kanjiCore.isDone ? 1 : proximityAlpha;
-
-                // Suavizado de la entrada visual del hilo
-                kanjiCore.globalAlpha += (targetAlpha - kanjiCore.globalAlpha) * 0.1;
-
-                // Trigger del bloqueo Magnético con Lógica de Salida (v33.0)
-                // Enganche cuando el CENTRO del párrafo pasa el 15% superior (Comfort Reading)
-                const kanjiCenter = rect.top + rect.height / 2;
-                if (kanjiCore.state === kanjiCore.STATE.READY && kanjiCenter <= fadeEnd) {
-                    if (kanjiWaitT0 === 0) {
-                        kanjiWaitT0 = Date.now();
-                        console.log('KANJI: Reading Zone reached. Waiting 400ms...');
-                    } else if (Date.now() - kanjiWaitT0 >= 400) {
-                        kanjiCore.state = kanjiCore.STATE.LOCKING;
-                        kanjiCore.isLocked = true;
-                        setTransitionLocked(true);
-
-                        // v33.0: Snap-Back preciso al nuevo threshold de salida
-                        if (kanjiCenter < fadeEnd - 15) {
-                            window.scrollTo(0, window.scrollY + (kanjiCenter - fadeEnd));
-                        }
-                        console.log('KANJI: Wait done. Engagement locked at top exit.');
-                    }
-                } else if (kanjiCore.state === kanjiCore.STATE.READY && kanjiCenter > fadeStart) {
-                    // Reset del timer si el usuario scrollea hacia arriba/atrás
-                    if (kanjiWaitT0 !== 0) {
-                        kanjiWaitT0 = 0;
-                        console.log('KANJI: Reading Zone left. Timer reset.');
-                    }
-                }
-
-
-
-            }
+            // v40.0: Internalized Kanji Engine logic
+            kanjiCore.checkTrigger(rect, vH);
+            kanjiCore.update(rect);
 
             // Sincronizar bloqueo global con estado del sistema kanji (v4 state logic)
             if (kanjiCore.isDone && isTransitionLocked) {
@@ -309,10 +258,6 @@ function setupScrollEngine() {
             }
         }
 
-        // 5. Compass Tension (Final Bridge)
-        if (compasTension) {
-            compasTension.update(silkCoreP0, kanjiCore);
-        }
 
         requestAnimationFrame(update);
     }

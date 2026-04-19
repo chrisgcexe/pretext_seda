@@ -1,7 +1,7 @@
 /**
  * KANJI SYSTEM - Master Narrative Engine (v6.0 - Final Polish)
  * High-fidelity 'Ghost Ship' implementation mirroring SilkSystem.js logic.
- * Version 6.0: Fixed Indexing math, Magnetic Inertia, and Scroll Lock damping.
+ * v40.5: Identifier: "HILO DE LA MUCHACHA" (Kanji Thread) - Special end animation (Hanging Tail).
  */
 
 export class KanjiCanvas {
@@ -30,18 +30,17 @@ export class KanjiCanvas {
         this.isInitialized = false;
 
         // Physics Const (consistent with SilkSystem v17.0)
-        this.nodeCount = 24; // Más nodos para mayor curvatura
+        this.nodeCount = 15; // Sincronizado con SilkSystem para paridad perfecta
         this.nodes = [];
         this.safeZoneX = 0;
         this.safeZoneY = 0;
 
         this.progress = 0;
+        this.targetProgress = 0; // v40.0: Internal target for smoothing
         this.isLocked = false;
         this.isDone = false;
 
-        this.enrollmentProgress = 0; // v24.0: Metáfora del ovillo
-        this.enrollmentStarted = false;
-        this.snapT = 0;
+        this.waitT0 = 0; // v40.0: Internal wait timer
 
         // Physics State (v30.0: Ghost Ship Fall)
         this.yOffset = 0;
@@ -49,6 +48,11 @@ export class KanjiCanvas {
         this.yVelocity = 0;
         this.angleOffset = 0;
         this.targetAngle = 0;
+
+        // v40.6: Organic Movement State
+        this.lastScrollY = window.scrollY;
+        this.scrollVelocity = 0;
+        this.windTime = Math.random() * 100;
 
         // Dynamic scaling
 
@@ -138,8 +142,18 @@ export class KanjiCanvas {
         });
     }
 
-    update(externalProgress, rect = null) {
+    update(rect = null) {
         if (!this.isInitialized) return;
+
+        // v40.6: Scroll Velocity & Wind Update
+        const currentScroll = window.scrollY;
+        this.scrollVelocity = (currentScroll - this.lastScrollY) * 0.95;
+        this.lastScrollY = currentScroll;
+        this.windTime += 0.02;
+
+        // v40.0: Internal progress smoothing (Lerp)
+        const kanjiLerpFactor = 0.12;
+        this.progress += (this.targetProgress - this.progress) * kanjiLerpFactor;
 
         // v27.0: Travel Zone Guard (Consistent with SilkSystem)
         if (!this._travelZones) {
@@ -156,41 +170,30 @@ export class KanjiCanvas {
             if (inTravelZone) return; // Skip update for performance
         }
 
-        // v25.0: Proactive Enrollment (Auto-Ovillo Off-Screen)
-        if (rect && (rect.top < -800 || rect.top > window.innerHeight + 800)) {
+        // v25.0: Final State Guard (Off-Screen)
+        // No enrollment/ovillo allowed. Just mark as done if really far.
+        if (rect && (rect.top < -1200 || rect.top > window.innerHeight + 1200)) {
             if (this.state === this.STATE.CUT || (this.progress > 0.95 && this.state !== this.STATE.READY)) {
-                this.enrollmentProgress = 1.0;
-                this.enrollmentStarted = true;
                 this.state = this.STATE.DONE;
                 this.isDone = true;
             }
         }
 
         if (this.state === this.STATE.DONE) {
+            this.updatePhysics();
             this.render();
             return;
         }
 
         this.updateStaticPositions();
 
-        if (typeof externalProgress === 'number' && this.state !== this.STATE.CUT) {
-            // v27.1: State transition trigger (Deadlock Fix)
-            if (this.state === this.STATE.LOCKING && externalProgress > 0.001) {
-                this.state = this.STATE.FRAYING;
-            }
-
-            if (this.state === this.STATE.READY || this.state === this.STATE.LOCKING) {
-                this.progress = 0;
-            } else {
-                this.progress = Math.max(0, Math.min(1, externalProgress));
-            }
-        }
-
 
         // Clímax: El Kanji llega al destino -> CORTE
         if (this.progress >= 0.999 && this.state === this.STATE.FRAYING) {
             this.state = this.STATE.CUT;
             this.cutTime = Date.now();
+            this.isLocked = false; // UNLOCK IMMEDIATELY (User requested)
+            console.log("KANJI: Fraying complete, unlocking scroll.");
         }
 
         this.updatePhysics();
@@ -261,7 +264,7 @@ export class KanjiCanvas {
 
                 const distFromActive = Math.abs(i - currentActiveIdx);
 
-                if (distFromActive < 12 && c.isVisible && this.state !== this.STATE.CUT) {
+                if (distFromActive < 12 && c.isVisible && this.state === this.STATE.FRAYING) {
                     let prevChar = null;
                     let prevIdx = -1;
                     // v38.11: Búsqueda de vecino con límite de arrastre (SilkSystem style)
@@ -324,48 +327,51 @@ export class KanjiCanvas {
 
         // --- NODOS ---
         const lastNode = this.nodeCount - 1;
-        if (this.state !== this.STATE.CUT) {
-            // Si currentActiveIdx === length, usamos el último char como ancla visual
+        if (this.state !== this.STATE.CUT && this.state !== this.STATE.DONE) {
+            // FRAYING PHASE: Hilo unido al carácter que vuela
             const targetIdx = Math.min(this.chars.length - 1, currentActiveIdx);
             const targetChar = this.chars[targetIdx];
             
-            // v31.4: Ahora usamos targetChar recién actualizado (Lag 0)
             this.nodes[0].x = targetChar.curX;
             this.nodes[0].y = targetChar.curY;
-            
             this.nodes[lastNode].x = this.safeZoneX;
             this.nodes[lastNode].y = this.safeZoneY;
         } else {
-            // v24.0: Metáfora del ovillo en el corte (SilkSystem sync)
-            let enroll = 0;
-            if (Date.now() - this.cutTime > 2000) {
-                if (!this.enrollmentStarted) this.enrollmentStarted = true;
-                if (this.enrollmentProgress < 1.0) {
-                    this.enrollmentProgress += 0.012;
-                    if (this.enrollmentProgress >= 1.0) {
-                        this.enrollmentProgress = 1.0;
-                    }
-                }
-                enroll = this.enrollmentProgress;
+            // CUT / DONE PHASE: Hilo colgando (HILO DE LA MUCHACHA)
+            const tailLength = 45; 
+            const t = this.windTime + 0.5; // v45.3: Phase offset to differentiate from Silk
+            const windX = Math.sin(t * 1.05) * 12 + Math.sin(t * 2.45) * 2.5; 
+            const windY = (windX * windX) / 144 * -3; // Synchronized with SilkSystem parity
+            
+            let targetX = this.safeZoneX + windX;
+            let targetY = this.safeZoneY + tailLength + windY;
+
+            // Scroll Inertia Impact (v44.1: Subtler, ethereal feel - 0.18x)
+            if (Math.abs(this.scrollVelocity) > 1) {
+                targetY -= this.scrollVelocity * 0.18;
             }
 
-            // v31.7: Caída suave al "hilo colgante" y luego enrollado
-            const targetHangY = this.safeZoneY + (60 * (1 - enroll));
-            this.nodes[0].x += (this.safeZoneX - this.nodes[0].x) * 0.15;
-            this.nodes[0].y += (targetHangY - this.nodes[0].y) * 0.15;
-            
+            this.nodes[0].x = targetX;
+            this.nodes[0].y = targetY;
             this.nodes[lastNode].x = this.safeZoneX;
             this.nodes[lastNode].y = this.safeZoneY;
         }
 
-        // v38.3: Sincronización de físicas globales (SilkSystem spec)
-        const gravity = this.state === this.STATE.CUT ? (0.45 * (1 - this.enrollmentProgress)) : 0.12;
+        // v40.8: Final Physics Parity (Synchronized with SilkSystem)
+        const gravity = this.state === this.STATE.CUT || this.state === this.STATE.DONE ? 0.25 : 0.12;
         const friction = 0.94;
 
         for (let i = 0; i < this.nodeCount; i++) {
             const n = this.nodes[i];
-            if ((i === 0 && this.state !== this.STATE.CUT) || i === lastNode) {
-                // Pin
+            
+            // v40.8: HARD PIN both ends in DONE/CUT phase (match SilkSystem logic)
+            const isTailPin = (i === 0);
+            const isAnchorPin = (i === lastNode);
+
+            if (isTailPin || isAnchorPin) {
+                // Keep pinned to what we set before the loop
+                n.oldX = n.x;
+                n.oldY = n.y;
             } else {
                 const vx = (n.x - n.oldX) * friction;
                 const vy = (n.y - n.oldY) * friction;
@@ -373,6 +379,12 @@ export class KanjiCanvas {
                 n.oldY = n.y;
                 n.x += vx;
                 n.y += vy + gravity;
+
+                // Micro-vibración orgánica
+                if (this.state === this.STATE.DONE || this.state === this.STATE.CUT) {
+                    n.x += (Math.random() - 0.5) * 0.15;
+                    n.y += (Math.random() - 0.5) * 0.15;
+                }
             }
         }
 
@@ -394,7 +406,8 @@ export class KanjiCanvas {
                 const d = Math.hypot(dx, dy);
                 const diff = (segLen - d) / (d || 1);
                 
-                const m1 = (i === 0 && this.state !== this.STATE.CUT) ? 0 : 0.5;
+                // Pin both ends in CUT/DONE to avoid receding/twitching
+                const m1 = (i === 0) ? 0 : 0.5;
                 const m2 = (i + 1 === lastNode) ? 0 : 0.5;
                 if (m1 + m2 === 0) continue;
                 
@@ -412,14 +425,87 @@ export class KanjiCanvas {
             }
         }
 
-        if (this.snapT > 0) {
-            this.snapT--;
-        }
-
-        if (this.state === this.STATE.CUT && Date.now() - this.cutTime > 5000) {
+        if (this.state === this.STATE.CUT && Date.now() - this.cutTime > 2000) {
             this.state = this.STATE.DONE;
             this.isDone = true;
-            this.isLocked = false;
+        }
+    }
+
+    // --- PRO SCROLL HANDLER (v40.0) ---
+    /**
+     * Replaces the logic previously scattered in NarrativeManager and main.js
+     * Handles the "magnetic pull" and instantaneous lock.
+     */
+    checkTrigger(rect, vH) {
+        if (!rect || this.isDone || this.isLocked && (this.state === this.STATE.CUT || this.state === this.STATE.DONE)) {
+            if (this.isLocked && (this.state === this.STATE.CUT || this.state === this.STATE.DONE)) this.isLocked = false;
+            return;
+        }
+
+        const kanjiCenter = rect.top + rect.height / 2;
+        const fadeStart = vH * 0.5;
+        const fadeEnd = vH * 0.15;
+
+        // Opacidad por proximidad
+        const proximityAlpha = Math.max(0, Math.min(1, (fadeStart - rect.top) / (fadeStart - fadeEnd)));
+        const targetAlpha = this.isDone ? 1 : proximityAlpha;
+        this.globalAlpha += (targetAlpha - this.globalAlpha) * 0.1;
+
+        // v40.3: Fast-scroll protection
+        // If we are already deep into the threshold, we lock instantly bypass the 400ms wait
+        const isDeepIn = kanjiCenter < (fadeEnd - 40);
+
+        if (this.state === this.STATE.READY && kanjiCenter <= fadeEnd) {
+            if (this.waitT0 === 0) {
+                this.waitT0 = Date.now();
+                if (isDeepIn) this.lock(kanjiCenter, fadeEnd); // Instant catch
+            } else if (Date.now() - this.waitT0 >= 400 || isDeepIn) {
+                this.lock(kanjiCenter, fadeEnd);
+            }
+        } else if (this.state === this.STATE.READY && kanjiCenter > fadeStart) {
+            this.waitT0 = 0;
+        }
+        
+        // v40.1: Soft Magnetism during LOCKING
+        if (this.isLocked && this.state === this.STATE.LOCKING) {
+            const pull = (kanjiCenter - fadeEnd);
+            if (Math.abs(pull) > 1) {
+                window.scrollTo(0, window.scrollY + pull * 0.1); // Smooth pull instead of hard snap
+            } else {
+                // Once centered, we are ready to fray
+                // We keep LOCKING state until the user actually scrolls to advance
+            }
+        }
+    }
+
+    lock(currentCenter, targetCenter) {
+        this.state = this.STATE.LOCKING;
+        this.isLocked = true;
+        
+        // INSTANT CATCH: Si el usuario ya se pasó el límite, lo traemos de vuelta 
+        // pero convertimos ese exceso en progreso inicial para que no se sienta "trabado"
+        if (currentCenter < targetCenter - 10) {
+            const excess = (targetCenter - currentCenter);
+            window.scrollTo(0, window.scrollY + (currentCenter - targetCenter));
+            // Opcional: Podríamos dar un boost inicial a targetProgress aquí
+            // this.targetProgress = Math.min(0.1, excess * 0.001); 
+        }
+        
+        // Trigger global lock in NarrativeManager (handled via instance check)
+        console.log("KANJI: Locked and magnetic pull active.");
+    }
+
+    handleScroll(deltaY, sensitivity) {
+        if (!this.isLocked || this.isDone || this.state === this.STATE.CUT || this.state === this.STATE.DONE) return;
+
+        // v40.2: Start fraying as soon as there's movement
+        if (this.state === this.STATE.LOCKING && Math.abs(deltaY) > 0.1) {
+            this.state = this.STATE.FRAYING;
+        }
+
+        if (this.state === this.STATE.FRAYING) {
+            const delta = deltaY * sensitivity;
+            this.targetProgress = Math.max(0, Math.min(1, this.targetProgress + delta));
         }
     }
 
@@ -441,8 +527,7 @@ export class KanjiCanvas {
 
         this.chars.forEach(c => {
             if (c.el.style.visibility === 'hidden' || c.isAnchored) {
-                // v36.1: Si ya terminó todo, solo permitimos ver el ancla real (sin paréntesis residuales)
-                if (this.isDone && !c.isHUDAnchor) return;
+                // v44.0: Removida restricción incorrecta que ocultaba letras en DONE
 
                 const finalAlpha = Math.max(0, Math.min(1, c.opacity * this.globalAlpha));
                 if (finalAlpha <= 0.01) return;
@@ -478,9 +563,10 @@ export class KanjiCanvas {
     drawSilkPath(ctx) {
         ctx.save();
         ctx.fillStyle = "#4a7a9e";
-        ctx.globalAlpha = (this.state === this.STATE.CUT ? 0.5 : 0.8) * this.globalAlpha * (1 - this.enrollmentProgress);
-        ctx.font = 'bold 9px "Courier New", monospace';
-        const dotGap = 2.4;
+        const isHanging = (this.state === this.STATE.CUT || this.state === this.STATE.DONE);
+        ctx.globalAlpha = (isHanging ? 0.95 : 0.85) * this.globalAlpha;
+        ctx.font = 'bold 10px "Courier New", monospace';
+        const dotGap = 2.5;
         let accumulator = 0;
         for (let i = 0; i < this.nodeCount - 1; i++) {
             const p1 = this.nodes[i];

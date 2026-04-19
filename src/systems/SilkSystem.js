@@ -2,6 +2,7 @@
  * SILK CANVAS ENGINE
  * Reemplaza el sistema de Spans por un Canvas de alta performance.
  * v3.0 - Mecánica de Ruptura y Costura (Drag & Drop)
+ * v38.5: Identifier: "HILO DE HÉLÈNE" (Silk Thread) - Special end animation (Hanging Tail).
  */
 export class SilkCanvas {
     constructor(elements, fullText, limitIndex = -1) {
@@ -66,6 +67,9 @@ export class SilkCanvas {
         };
         this.state = this.STATE.INTACT;
 
+        // v40.8: Organic Movement State (Purged enrollment)
+        this.windTime = Math.random() * 100;
+
         this.mouseX = 0;
         this.mouseY = 0;
         this.repairScrollY = 0;
@@ -83,9 +87,9 @@ export class SilkCanvas {
         this.collisionRects = [];
         this.postRepairScrollStarted = false; // Deadzone de inercia
         
-        // --- EFECTOS DE IMPACTO (v3.1) ---
-        this.snapT = 0; // Timer para el shake de impacto
-        
+        // v40.8: Organic Movement State (Purged enrollment & snapT)
+        this.windTime = Math.random() * 100;
+
         this.setupInteraction();
     }
     
@@ -377,9 +381,6 @@ export class SilkCanvas {
             }
         }
 
-        this.enrollmentProgress = 0; // v23.0 - Metáfora del ovillo (Enrollment)
-        this.enrollmentStarted = false;
-        
         this.isInitialized = true;
 
         // IDENTIFICACIÓN DE HITOS (v10.0): Para hilos guía y vínculos
@@ -416,21 +417,16 @@ export class SilkCanvas {
     }
 
     update(progress, targetX, targetY, rect = null) {
+        if (!this.elements) return;
+        this.windTime += 0.02;
         if (!this.isInitialized) { this.setup(); if (!this.isInitialized) return; }
 
-        // v25.0: Proactive Enrollment (Auto-Ovillo Off-Screen)
-        // Solo adelantamos si TODO el sistema (P0 y P1) está fuera de vista.
+        // v25.0: View Guard (Off-Screen)
+        // No enrollment/ovillo allowed. Just mark state if necessary.
         const isBlockInView = this.elements.some(entry => {
             const r = entry.el.getBoundingClientRect();
-            return (r.bottom > -400 && r.top < window.innerHeight + 400);
+            return (r.bottom > -800 && r.top < window.innerHeight + 800);
         });
-
-        if (!isBlockInView) {
-            if (this.state === this.STATE.DONE || (this.isRepaired && progress > 1.9)) {
-                this.enrollmentProgress = 1.0;
-                this.enrollmentStarted = true;
-            }
-        }
 
         if (!this.hasResized) { this.resize(); this.hasResized = true; }
 
@@ -569,18 +565,13 @@ export class SilkCanvas {
         // --- LOCK DE REGENERACIÓN (v9.5) ---
         // Si ya estamos en estado DONE, ignoramos por completo el progress externo
         // y forzamos que todas las letras estén consumidas permanentemente.
-        if (this.state === this.STATE.DONE) {
+        if (this.state === this.STATE.DONE || (this.isRepaired && progress > 2.0)) {
+            this.state = this.STATE.DONE;
+            this.isDone = true;
             scaledProgress = this.totalChars;
             // v23.0: Iniciamos la metáfora del ovillo
             if (!this.enrollmentStarted) {
                 this.enrollmentStarted = true;
-            }
-            if (this.enrollmentProgress < 1.0) {
-                this.enrollmentProgress += 0.02; // Velocidad de enrollado más fluida para evitar sensación de lag/bug
-                if (this.enrollmentProgress >= 1.0) {
-                    this.enrollmentProgress = 1.0;
-                    this.snapT = 0; // Sin jitter final para evitar rebote brusco
-                }
             }
         }
         
@@ -660,10 +651,18 @@ export class SilkCanvas {
             
             const isEndOfP0 = (currentIdx >= this.totalChars - 1.5);
             if (isEndOfP0 || this.state === this.STATE.DONE) {
-                // v23.0: Metáfora del ovillo - El punto final se repliega hacia el ancla (dX, dY)
-                const hangLength = 60 * (1 - this.enrollmentProgress);
-                targetXNodes = dX;
-                targetYNodes = dY + hangLength;
+                // v40.6: "HILO DE HÉLÈNE" - Organic Hanging Tail
+                const tailLength = 45; 
+                const windX = Math.sin(this.windTime * 1.05) * 12 + Math.sin(this.windTime * 2.45) * 2.5; 
+                const windY = (windX * windX) / 144 * -3; // v45.2: Inverted for real pendulum (Up at edges)
+                
+                targetXNodes = dX + windX;
+                targetYNodes = dY + tailLength + windY;
+
+                // Sync scroll inertia correctly (v44.1: Subtler, ethereal feel - 0.18x)
+                if (Math.abs(this.scrollVelocity) > 1) {
+                    targetYNodes -= this.scrollVelocity * 0.18;
+                }
             } else if (isHandoverPhase && this.p0LastCharIdx !== -1 && this.chars[this.p0LastCharIdx]) {
                 const endChar = this.chars[this.p0LastCharIdx];
                 targetXNodes = endChar.curX;
@@ -975,8 +974,10 @@ export class SilkCanvas {
     updatePhysics(nodes, xStart, yStart, xEnd, yEnd) {
         if (this.isSleeping && !this.isDragging) return;
         
-        const gravity = 0.12, friction = 0.94, iterations = 24;
-        const relaxFactor = 1.02; // De 1.08 a 1.02 para que el hilo esté más tenso y responda mejor
+        const friction = 0.94, iterations = 24;
+        const relaxFactor = 1.02; 
+        const gravity = (this.state === this.STATE.DONE) ? 0.25 : 0.12; // Synced with Kanji
+
         nodes[0].x = xStart; 
         nodes[0].y = yStart;
         
@@ -986,12 +987,17 @@ export class SilkCanvas {
 
         for (let i = 1; i < this.nodeCount - 1; i++) {
             const n = nodes[i];
-            const vx = (n.x - n.oldX) * friction;
             const vy = (n.y - n.oldY) * friction;
             n.oldX = n.x; 
             n.oldY = n.y; 
-            n.x += vx; 
+            n.x += (n.x - n.oldX) * friction; 
             n.y += vy + gravity;
+
+            // v40.7: Micro-vibración orgánica
+            if (this.state === this.STATE.DONE) {
+                n.x += (Math.random() - 0.5) * 0.15;
+                n.y += (Math.random() - 0.5) * 0.15;
+            }
         }
 
         const totalDist = Math.hypot(xEnd - xStart, yEnd - yStart);
@@ -1086,7 +1092,7 @@ export class SilkCanvas {
     drawSilk(ctx) {
         ctx.save();
         ctx.fillStyle = "#4a7a9e"; 
-        ctx.globalAlpha = 0.85 * (1 - this.enrollmentProgress); // v23.0: Desvanece al enrollarse
+        ctx.globalAlpha = 0.95; // v40.8: No fading (consistent with KanjiSystem)
         if (ctx.globalAlpha <= 0.01) { ctx.restore(); return; }
         ctx.font = 'bold 10px "Courier New", monospace';
         ctx.textAlign = "center";
@@ -1172,15 +1178,14 @@ export class SilkCanvas {
         // Fase 1: Tirón violento (instantáneo) | Fase 2: Pausa | Fase 3: Izado graduado
         const easeLift = liftProgress; 
 
-        // MOTOR DE ITERACIÓN ADAPTATIVA: Más iteraciones para mayor precisión y respuesta instantánea
-        let iterations = (isLifting || this.isDragging) ? 24 : 12; 
+        // MOTOR DE ITERACIÓN ADAPTATIVA
+        let iterations = 24; 
         
-        // Gravedad dinámica: Tira hacia arriba después de la pausa para izar
-        let gravity = 0.08; 
-        if (isBroken && !this.isDragging) gravity = 0.32; 
+        // Gravedad dinámica (v42.0: Purga Total - Synchronized with Kanji)
+        let gravity = 0.25; 
+        if (isBroken && !this.isDragging) gravity = 0.35; 
         if (this.isRepaired) {
-            // Durante la pausa (0-300ms), mantenemos tensión. Tras la pausa (300ms+), izamos.
-            gravity = isLifting ? (-0.12 + (0.32 * liftProgress)) : 0.20; 
+            gravity = isLifting ? (-0.12 + (0.37 * liftProgress)) : 0.25; 
         }
         
         const isPinnedEnd = !isBroken || this.isDragging || this.isRepaired;

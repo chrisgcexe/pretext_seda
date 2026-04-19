@@ -30,8 +30,6 @@ let japaneseWomanMarked = false; // Flag para marcar solo la primera mención
 
 export let minScrollAllowed = 0;
 export function setMinScrollAllowed(val) { minScrollAllowed = val; }
-export let kanjiProgress = 0;
-export function updateKanjiProgress(val) { kanjiProgress = val; }
 
 // --- FUNCIONES CORE ---
 
@@ -65,8 +63,7 @@ export function lockScroll(e) {
 
     if (kanjiCore && kanjiCore.isLocked) {
         e.preventDefault();
-        const delta = e.deltaY * KANJI_SCROLL_SENSITIVITY;
-        kanjiProgress = Math.max(0, Math.min(1, kanjiProgress + delta));
+        kanjiCore.handleScroll(e.deltaY, KANJI_SCROLL_SENSITIVITY);
 
         if (kanjiCore.isDone) {
             setTransitionLocked(false);
